@@ -11,9 +11,10 @@ class ReportBuilder {
   }
 
   buildDailyReport(analysisData) {
+    // ADDED 'flow' to destructuring
     const { symbol, quote, timestamp, totals, hourlyBreakdown, tierAnalysis, tierComposition,
             atmFlow, complexAnalysis, deltaAnalysis, divergences, 
-            institutionalLevels, blocks, flow } = analysisData;
+            institutionalLevels, blocks, flow } = analysisData;  // <-- FIXED
 
     const now = moment.tz(timestamp, this.timezone);
     const sessionStart = moment.tz(`${now.format('YYYY-MM-DD')} ${config.app.sessionStart}`, this.timezone);
@@ -287,13 +288,15 @@ if (tierAnalysis.decision && tierAnalysis.decision.direction !== 'NEUTRAL') {
     report += `• Notional: $${this.formatCurrency(t2c.calls.notional)} (${t2c.calls.prints} prints)\n`;
     report += `• Real Delta: $${this.formatCurrency(t2c.calls.realDelta)} exposure\n`;
     report += `• Avg DTE: ${t2c.calls.avgDte} days\n`;
-    report += `• Avg Size: ${this.calculateAvgContracts(t2c.calls)} contracts\n\n`;
+    report += `• Avg Size: $${this.formatCurrency(t2c.calls.avgSize)}\n`;
+    report += `• Est. Contracts: ${this.calculateAvgContracts(t2c.calls)} contracts\n\n`;
     
     report += `*PUTS:*\n`;
     report += `• Notional: $${this.formatCurrency(t2c.puts.notional)} (${t2c.puts.prints} prints)\n`;
     report += `• Real Delta: $${this.formatCurrency(t2c.puts.realDelta)} exposure\n`;
     report += `• Avg DTE: ${t2c.puts.avgDte} days\n`;
-    report += `• Avg Size: ${this.calculateAvgContracts(t2c.puts)} contracts\n\n`;
+    report += `• Avg Size: $${this.formatCurrency(t2c.puts.avgSize)}\n`;
+    report += `• Est. Contracts: ${this.calculateAvgContracts(t2c.puts)} contracts\n\n`;
     
     report += `📊 *TIER-2 RATIO:*\n`;
     const t2NotionalRatio = t2c.puts.notional > 0 ? (t2c.calls.notional / t2c.puts.notional).toFixed(2) : '∞';
@@ -664,6 +667,7 @@ report += `*Sentiment Shift:* ${sentimentIndex.sentimentShift} (from ${sentiment
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // FLOW ANOMALY DETECTION
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FIXED: Changed flowData to flow
 const anomalies = this.advancedAnalysis.detectFlowAnomalies(flow, blocks, totals);
 if (anomalies.anomalies.length > 0) {
   report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
@@ -685,6 +689,7 @@ if (anomalies.anomalies.length > 0) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VOLATILITY REGIME ANALYSIS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FIXED: Changed flowData to flow
 const volatilityRegime = this.advancedAnalysis.analyzeVolatilityRegime(flow, atmFlow);
 report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
 report += `🌊 *VOLATILITY REGIME ANALYSIS*\n\n`;
@@ -743,7 +748,8 @@ report += `*Risk:* ${impactScore.risk}\n\n`;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // INSTITUTIONAL POSITIONING CYCLES
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const positioningCycles = this.advancedAnalysis.analyzePositioningCycles(totals, tierAnalysis);
+// FIXED: Added quote.price parameter
+const positioningCycles = this.advancedAnalysis.analyzePositioningCycles(totals, tierAnalysis, quote.price);
 report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
 report += `🔄 *INSTITUTIONAL POSITIONING CYCLES*\n\n`;
 
@@ -772,7 +778,8 @@ report += `*Cycle Risk:* ${positioningCycles.cycleRisk}\n\n`;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MULTI-TIMEFRAME CONFLUENCE MATRIX
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const confluenceMatrix = this.advancedAnalysis.generateConfluenceMatrix(tierAnalysis, institutionalLevels);
+// FIXED: Added quote.price parameter
+const confluenceMatrix = this.advancedAnalysis.generateConfluenceMatrix(tierAnalysis, institutionalLevels, quote.price);
 report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
 report += `🎯 *MULTI-TIMEFRAME CONFLUENCE MATRIX*\n\n`;
 
@@ -1057,7 +1064,7 @@ report += `*Trading Edge:* ${confluenceMatrix.tradingEdge}\n\n`;
   }
 
   calculateAvgContracts(tierData) {
-    if (!tierData.avgSize || tierData.avgSize === 0) return 0;
+    if (!tierData || !tierData.avgSize || tierData.avgSize === 0) return 0;
     
     // Estimate contracts based on avg size (assuming avg option price ~$2.50)
     const avgOptionPrice = 2.50;
