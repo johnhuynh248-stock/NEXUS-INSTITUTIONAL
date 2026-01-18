@@ -335,13 +335,14 @@ class AdvancedAnalysis {
   }
 
   // 7. INSTITUTIONAL POSITIONING CYCLES
-  analyzePositioningCycles(totals, tierAnalysis) {
+  // FIXED: Added spotPrice parameter with default value
+  analyzePositioningCycles(totals, tierAnalysis, spotPrice = 100) {
     const cycleDays = 3 + Math.floor(Math.random() * 3);
     const cycleIntensity = (6 + Math.random() * 4).toFixed(1);
     const participation = (60 + Math.random() * 10).toFixed(0);
     const conviction = (7 + Math.random() * 3).toFixed(1);
     
-    const spotPrice = 100; // Placeholder - would use actual price
+    // Use the provided spotPrice parameter instead of hardcoded 100
     const minTarget = spotPrice * 1.017;
     const expectedTarget = spotPrice * 1.045;
     const maxTarget = spotPrice * 1.074;
@@ -373,7 +374,8 @@ class AdvancedAnalysis {
   }
 
   // 8. MULTI-TIMEFRAME CONFLUENCE MATRIX
-  generateConfluenceMatrix(tierAnalysis, institutionalLevels) {
+  // FIXED: Added spotPrice parameter with default value
+  generateConfluenceMatrix(tierAnalysis, institutionalLevels, spotPrice = 100) {
     const timeframes = [
       { name: '0-1 DTE', weight: 0.35 },
       { name: '3-5 DTE', weight: 0.30 },
@@ -381,8 +383,7 @@ class AdvancedAnalysis {
       { name: '30-45 DTE', weight: 0.10 }
     ];
     
-    const spotPrice = institutionalLevels.support[0]?.strike * 1.02 || 100;
-    
+    // Use the provided spotPrice parameter instead of deriving from institutionalLevels
     const matrix = timeframes.map((tf, i) => {
       let direction, strength, keyLevel;
       
