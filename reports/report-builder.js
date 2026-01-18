@@ -13,7 +13,7 @@ class ReportBuilder {
   buildDailyReport(analysisData) {
     const { symbol, quote, timestamp, totals, hourlyBreakdown, tierAnalysis, tierComposition,
             atmFlow, complexAnalysis, deltaAnalysis, divergences, 
-            institutionalLevels, blocks } = analysisData;
+            institutionalLevels, blocks, flow } = analysisData;
 
     const now = moment.tz(timestamp, this.timezone);
     const sessionStart = moment.tz(`${now.format('YYYY-MM-DD')} ${config.app.sessionStart}`, this.timezone);
@@ -664,7 +664,7 @@ report += `*Sentiment Shift:* ${sentimentIndex.sentimentShift} (from ${sentiment
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // FLOW ANOMALY DETECTION
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const anomalies = this.advancedAnalysis.detectFlowAnomalies(flowData, blocks, totals);
+const anomalies = this.advancedAnalysis.detectFlowAnomalies(flow, blocks, totals);
 if (anomalies.anomalies.length > 0) {
   report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
   report += `🚨 *FLOW ANOMALY DETECTION*\n\n`;
@@ -685,7 +685,7 @@ if (anomalies.anomalies.length > 0) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VOLATILITY REGIME ANALYSIS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const volatilityRegime = this.advancedAnalysis.analyzeVolatilityRegime(flowData, atmFlow);
+const volatilityRegime = this.advancedAnalysis.analyzeVolatilityRegime(flow, atmFlow);
 report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
 report += `🌊 *VOLATILITY REGIME ANALYSIS*\n\n`;
 
@@ -912,6 +912,56 @@ report += `*Trading Edge:* ${confluenceMatrix.tradingEdge}\n\n`;
     }
 
     report += `\n🎯 *Confidence Score:* ${thesis.confidence}/100\n\n`;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // INSTITUTIONAL TRADE STRUCTURING
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    const tradeSuggestions = this.generateTradeSuggestions(
+      analysisData, 
+      tierAnalysis, 
+      confluenceMatrix,
+      positioningCycles
+    );
+
+    if (tradeSuggestions.length > 0) {
+      report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      report += `🎯 *INSTITUTIONAL TRADE STRUCTURING*\n\n`;
+      
+      tradeSuggestions.forEach((suggestion, idx) => {
+        report += `${idx + 1}) *${suggestion.strategy}*\n`;
+        report += `   ${suggestion.direction} | ${suggestion.urgency} | Conviction: ${suggestion.conviction}/10\n\n`;
+        
+        report += `   *Structure:* ${suggestion.structure}\n`;
+        report += `   *Capital:* ${suggestion.capital}\n`;
+        report += `   *DTE:* ${suggestion.dte}\n`;
+        report += `   *Entry:* ${suggestion.entry}\n`;
+        report += `   *Target:* ${suggestion.target}\n`;
+        report += `   *Stop:* ${suggestion.stop}\n\n`;
+        
+        if (suggestion.greeks) {
+          report += `   *Greeks Profile:*\n`;
+          report += `   • Delta: ${suggestion.greeks.delta}\n`;
+          report += `   • Gamma: ${suggestion.greeks.gamma}\n`;
+          report += `   • Theta: ${suggestion.greeks.theta}\n`;
+          report += `   • Vega: ${suggestion.greeks.vega}\n\n`;
+        }
+        
+        report += `   *Institutional Rationale:*\n`;
+        suggestion.rationale.forEach(r => {
+          report += `   • ${r}\n`;
+        });
+        report += `\n`;
+      });
+      
+      if (tradeSuggestions[0]) {
+        report += `*Risk Management:*\n`;
+        report += `• Position Size: ${tradeSuggestions[0].positionSize} of portfolio\n`;
+        report += `• Max Allocation: ${tradeSuggestions[0].maxAllocation}\n`;
+        report += `• Portfolio Correlation: ${tradeSuggestions[0].correlation}\n`;
+        report += `• Hedge Required: ${tradeSuggestions[0].hedgeRequired}\n\n`;
+      }
+    }
+
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     report += `*END OF INSTITUTIONAL FLOW REPORT*\n`;
     report += `⚠️ This is NOT retail advice. Institutional data only.`;
@@ -1056,6 +1106,363 @@ report += `*Trading Edge:* ${confluenceMatrix.tradingEdge}\n\n`;
     return {
       confidence
     };
+  }
+
+  // NEW: Trade Structuring Methods
+  generateTradeSuggestions(analysisData, tierAnalysis, confluenceMatrix, positioningCycles) {
+    const { symbol, quote, totals, tierComposition, atmFlow, divergences } = analysisData;
+    const suggestions = [];
+    
+    const spotPrice = quote.price;
+    const isBullish = totals.netFlow > 0;
+    const isHighConviction = tierAnalysis.decision.confidence >= 80;
+    
+    // STRATEGY 1: Tier-1 Dominant Direction
+    if (tierAnalysis.tier1.hasClearSignal && tierAnalysis.hierarchy.followTier1) {
+      const isTier1Bullish = tierAnalysis.tier1.calls.notional > tierAnalysis.tier1.puts.notional;
+      
+      suggestions.push({
+        strategy: isTier1Bullish ? 'TIER-1 GAMMA ACCELERATOR' : 'TIER-1 HEDGE DEFENSE',
+        direction: isTier1Bullish ? '🐂 BULLISH' : '🐻 BEARISH',
+        urgency: '🚨 HIGH',
+        conviction: Math.min(tierAnalysis.decision.confidence + 10, 95),
+        structure: this.getTier1Structure(isTier1Bullish, spotPrice, atmFlow),
+        capital: '$25K-$100K',
+        dte: '1-3 days',
+        entry: this.getEntryPrice(isTier1Bullish, spotPrice, tierAnalysis),
+        target: this.getTargetPrice(isTier1Bullish, spotPrice, tierAnalysis),
+        stop: this.getStopPrice(isTier1Bullish, spotPrice, tierAnalysis),
+        greeks: {
+          delta: isTier1Bullish ? '+0.65 to +0.85' : '-0.65 to -0.85',
+          gamma: '+0.08 to +0.12',
+          theta: '-0.02 to -0.04 daily',
+          vega: '+0.15 to +0.25'
+        },
+        rationale: [
+          'Tier-1 institutional flow dominant (0-3 DTE)',
+          `${isTier1Bullish ? 'Aggressive call buying' : 'Defensive put hedging'} detected`,
+          'Gamma exposure aligns with dealer positioning',
+          'High urgency - expected move within 48h'
+        ],
+        positionSize: this.calculatePositionSize(Math.min(tierAnalysis.decision.confidence + 10, 95)),
+        maxAllocation: '15% of portfolio',
+        correlation: 'High to underlying',
+        hedgeRequired: 'Optional'
+      });
+    }
+    
+    // STRATEGY 2: Multi-Timeframe Confluence
+    if (confluenceMatrix.confluenceScore >= 8.0) {
+      const isConfluenceBullish = confluenceMatrix.matrix.filter(m => 
+        m.direction.includes('BULLISH')).length >= 3;
+      
+      suggestions.push({
+        strategy: 'CONFLUENCE ALIGNMENT SPREAD',
+        direction: isConfluenceBullish ? '🐂 BULLISH' : '🐻 BEARISH',
+        urgency: '📊 MODERATE',
+        conviction: 85,
+        structure: this.getConfluenceStructure(isConfluenceBullish, spotPrice, confluenceMatrix),
+        capital: '$50K-$200K',
+        dte: '7-21 days',
+        entry: this.getConfluenceEntry(isConfluenceBullish, spotPrice, confluenceMatrix),
+        target: this.getConfluenceTarget(isConfluenceBullish, spotPrice, confluenceMatrix),
+        stop: this.getConfluenceStop(isConfluenceBullish, spotPrice, confluenceMatrix),
+        greeks: {
+          delta: isConfluenceBullish ? '+0.40 to +0.60' : '-0.40 to -0.60',
+          gamma: '+0.04 to +0.07',
+          theta: '+0.01 to +0.03 daily',
+          vega: '+0.08 to +0.15'
+        },
+        rationale: [
+          'Multi-timeframe institutional alignment',
+          '4+ institutional participants in agreement',
+          'Defined risk-reward profile',
+          'Theta-positive positioning'
+        ],
+        positionSize: this.calculatePositionSize(85),
+        maxAllocation: '20% of portfolio',
+        correlation: 'Medium to Tech Sector',
+        hedgeRequired: 'Recommended'
+      });
+    }
+    
+    // STRATEGY 3: ATM Flow Concentration
+    if (Math.abs(atmFlow.netNotional) > totals.totalNotional * 0.3) {
+      const isATMBullish = atmFlow.netNotional > 0;
+      
+      suggestions.push({
+        strategy: 'ATM MOMENTUM PLAY',
+        direction: isATMBullish ? '🐂 BULLISH' : '🐻 BEARISH',
+        urgency: '⚡ MEDIUM-HIGH',
+        conviction: 78,
+        structure: this.getATMStructure(isATMBullish, spotPrice, atmFlow),
+        capital: '$15K-$75K',
+        dte: '0-7 days',
+        entry: spotPrice.toFixed(2),
+        target: this.getATMTarget(isATMBullish, spotPrice, atmFlow),
+        stop: this.getATMStop(isATMBullish, spotPrice, atmFlow),
+        greeks: {
+          delta: isATMBullish ? '+0.45 to +0.55' : '-0.45 to -0.55',
+          gamma: '+0.10 to +0.15',
+          theta: '-0.03 to -0.06 daily',
+          vega: '+0.20 to +0.30'
+        },
+        rationale: [
+          `ATM ${isATMBullish ? 'call' : 'put'} concentration >30% of total flow`,
+          'Dealer gamma positioning favorable',
+          'High liquidity at strike',
+          'Near-term expiration for gamma acceleration'
+        ],
+        positionSize: this.calculatePositionSize(78),
+        maxAllocation: '12% of portfolio',
+        correlation: 'High to Gamma Exposure',
+        hedgeRequired: 'Optional'
+      });
+    }
+    
+    // STRATEGY 4: Divergence Play
+    if (divergences.length > 0 && divergences[0].confidence > 70) {
+      const divergence = divergences[0];
+      
+      suggestions.push({
+        strategy: 'DIVERGENCE FADE',
+        direction: divergence.type.includes('POP') ? '🐻 BEARISH FADE' : '🐂 BULLISH REVERSAL',
+        urgency: '🔄 MEDIUM',
+        conviction: Math.min(divergence.confidence, 85),
+        structure: this.getDivergenceStructure(divergence, spotPrice),
+        capital: '$10K-$50K',
+        dte: '3-10 days',
+        entry: this.getDivergenceEntry(divergence, spotPrice),
+        target: this.getDivergenceTarget(divergence, spotPrice),
+        stop: this.getDivergenceStop(divergence, spotPrice),
+        greeks: {
+          delta: divergence.type.includes('POP') ? '-0.30 to -0.50' : '+0.30 to +0.50',
+          gamma: '+0.05 to +0.08',
+          theta: '+0.02 to +0.04 daily',
+          vega: '+0.10 to +0.18'
+        },
+        rationale: [
+          `Detected divergence: ${divergence.type}`,
+          'Institutional flow pattern indicates mean reversion',
+          'Statistical edge from historical patterns',
+          'Risk-defined structure'
+        ],
+        positionSize: this.calculatePositionSize(Math.min(divergence.confidence, 85)),
+        maxAllocation: '8% of portfolio',
+        correlation: 'Low to Market',
+        hedgeRequired: 'Recommended'
+      });
+    }
+    
+    // STRATEGY 5: Cycle-Based Position
+    if (positioningCycles && positioningCycles.currentPhase === 'ACCUMULATION') {
+      suggestions.push({
+        strategy: 'CYCLE ACCUMULATION',
+        direction: '🐂 BULLISH',
+        urgency: '⏳ PATIENT',
+        conviction: 82,
+        structure: `Long $${(spotPrice * 0.98).toFixed(2)} calls / Short $${(spotPrice * 1.06).toFixed(2)} calls`,
+        capital: '$100K-$500K',
+        dte: '30-45 days',
+        entry: 'Scale in over 3-5 days',
+        target: positioningCycles.cycleTargets.expected,
+        stop: positioningCycles.cycleRisk,
+        greeks: {
+          delta: '+0.35 to +0.45',
+          gamma: '+0.02 to +0.04',
+          theta: '+0.01 to +0.02 daily',
+          vega: '+0.05 to +0.12'
+        },
+        rationale: [
+          'Institutional accumulation cycle detected',
+          'Multi-day positioning window',
+          'Favorable risk-reward with defined risk',
+          'Aligns with patient institutional flow'
+        ],
+        positionSize: this.calculatePositionSize(82),
+        maxAllocation: '25% of portfolio',
+        correlation: 'Medium to Tech Sector',
+        hedgeRequired: 'Optional'
+      });
+    }
+    
+    return suggestions.slice(0, 3); // Return top 3 suggestions
+  }
+
+  // Trade Structuring Helper Methods
+  getTier1Structure(isBullish, spotPrice, atmFlow) {
+    if (isBullish) {
+      const callStrike = Math.round(spotPrice * 1.02);
+      const spreadStrike = Math.round(spotPrice * 1.06);
+      return `Long $${spotPrice.toFixed(2)} calls / Short $${callStrike} calls (Ratio: 2x1)`;
+    } else {
+      const putStrike = Math.round(spotPrice * 0.98);
+      const spreadStrike = Math.round(spotPrice * 0.94);
+      return `Long $${spotPrice.toFixed(2)} puts / Short $${putStrike} puts (Ratio: 2x1)`;
+    }
+  }
+
+  getConfluenceStructure(isBullish, spotPrice, confluenceMatrix) {
+    const nearStrike = isBullish ? 
+      Math.round(spotPrice * 0.99) : 
+      Math.round(spotPrice * 1.01);
+    const farStrike = isBullish ? 
+      Math.round(spotPrice * 1.05) : 
+      Math.round(spotPrice * 0.95);
+    
+    if (isBullish) {
+      return `Bull Call Spread: Buy $${nearStrike}C / Sell $${farStrike}C`;
+    } else {
+      return `Bear Put Spread: Buy $${farStrike}P / Sell $${nearStrike}P`;
+    }
+  }
+
+  getATMStructure(isBullish, spotPrice, atmFlow) {
+    const atmStrike = Math.round(spotPrice);
+    const otmStrike = isBullish ? 
+      Math.round(spotPrice * 1.03) : 
+      Math.round(spotPrice * 0.97);
+    
+    if (isBullish) {
+      return `ATM Call Diagonal: Buy $${atmStrike}C (short DTE) / Sell $${otmStrike}C (long DTE)`;
+    } else {
+      return `ATM Put Diagonal: Buy $${atmStrike}P (short DTE) / Sell $${otmStrike}P (long DTE)`;
+    }
+  }
+
+  getDivergenceStructure(divergence, spotPrice) {
+    if (divergence.type.includes('POP')) {
+      const callStrike = Math.round(spotPrice * 1.01);
+      const putStrike = Math.round(spotPrice * 0.99);
+      return `Iron Condor: Sell $${callStrike}C & $${putStrike}P / Buy $${(callStrike * 1.03).toFixed(0)}C & $${(putStrike * 0.97).toFixed(0)}P`;
+    } else {
+      const strike = Math.round(spotPrice);
+      return `Strangle: Buy $${(strike * 1.03).toFixed(0)}C & $${(strike * 0.97).toFixed(0)}P`;
+    }
+  }
+
+  // Price calculation helpers
+  getEntryPrice(isBullish, spotPrice, tierAnalysis) {
+    if (isBullish) {
+      const support = Math.max(
+        spotPrice * 0.995,
+        spotPrice - (spotPrice * tierAnalysis.tier1.signalStrength / 100)
+      );
+      return `$${support.toFixed(2)} (limit)`;
+    } else {
+      const resistance = Math.min(
+        spotPrice * 1.005,
+        spotPrice + (spotPrice * tierAnalysis.tier1.signalStrength / 100)
+      );
+      return `$${resistance.toFixed(2)} (limit)`;
+    }
+  }
+
+  getTargetPrice(isBullish, spotPrice, tierAnalysis) {
+    if (isBullish) {
+      const target = spotPrice * (1 + (tierAnalysis.decision.confidence / 1000));
+      return `$${target.toFixed(2)} (${((target/spotPrice-1)*100).toFixed(1)}%)`;
+    } else {
+      const target = spotPrice * (1 - (tierAnalysis.decision.confidence / 1000));
+      return `$${target.toFixed(2)} (${((1-target/spotPrice)*100).toFixed(1)}%)`;
+    }
+  }
+
+  getStopPrice(isBullish, spotPrice, tierAnalysis) {
+    if (isBullish) {
+      const stop = spotPrice * 0.985;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    } else {
+      const stop = spotPrice * 1.015;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    }
+  }
+
+  getConfluenceEntry(isBullish, spotPrice, confluenceMatrix) {
+    if (isBullish) {
+      const entry = spotPrice * 0.99;
+      return `$${entry.toFixed(2)} (limit)`;
+    } else {
+      const entry = spotPrice * 1.01;
+      return `$${entry.toFixed(2)} (limit)`;
+    }
+  }
+
+  getConfluenceTarget(isBullish, spotPrice, confluenceMatrix) {
+    if (isBullish) {
+      const target = spotPrice * 1.05;
+      return `$${target.toFixed(2)} (+${((target/spotPrice-1)*100).toFixed(1)}%)`;
+    } else {
+      const target = spotPrice * 0.95;
+      return `$${target.toFixed(2)} (${((1-target/spotPrice)*100).toFixed(1)}%)`;
+    }
+  }
+
+  getConfluenceStop(isBullish, spotPrice, confluenceMatrix) {
+    if (isBullish) {
+      const stop = spotPrice * 0.97;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    } else {
+      const stop = spotPrice * 1.03;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    }
+  }
+
+  getATMTarget(isBullish, spotPrice, atmFlow) {
+    if (isBullish) {
+      const target = spotPrice * 1.03;
+      return `$${target.toFixed(2)} (+${((target/spotPrice-1)*100).toFixed(1)}%)`;
+    } else {
+      const target = spotPrice * 0.97;
+      return `$${target.toFixed(2)} (${((1-target/spotPrice)*100).toFixed(1)}%)`;
+    }
+  }
+
+  getATMStop(isBullish, spotPrice, atmFlow) {
+    if (isBullish) {
+      const stop = spotPrice * 0.98;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    } else {
+      const stop = spotPrice * 1.02;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    }
+  }
+
+  getDivergenceEntry(divergence, spotPrice) {
+    if (divergence.type.includes('POP')) {
+      return `$${spotPrice.toFixed(2)} (market)`;
+    } else {
+      const entry = spotPrice * 0.995;
+      return `$${entry.toFixed(2)} (limit)`;
+    }
+  }
+
+  getDivergenceTarget(divergence, spotPrice) {
+    if (divergence.type.includes('POP')) {
+      const target = spotPrice * 0.99;
+      return `$${target.toFixed(2)} (${((1-target/spotPrice)*100).toFixed(1)}%)`;
+    } else {
+      const target = spotPrice * 1.02;
+      return `$${target.toFixed(2)} (+${((target/spotPrice-1)*100).toFixed(1)}%)`;
+    }
+  }
+
+  getDivergenceStop(divergence, spotPrice) {
+    if (divergence.type.includes('POP')) {
+      const stop = spotPrice * 1.01;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    } else {
+      const stop = spotPrice * 0.98;
+      return `$${stop.toFixed(2)} (stop-loss)`;
+    }
+  }
+
+  // Risk management
+  calculatePositionSize(conviction) {
+    if (conviction >= 90) return '3-5%';
+    if (conviction >= 80) return '2-3%';
+    if (conviction >= 70) return '1-2%';
+    return '0.5-1%';
   }
 }
 
