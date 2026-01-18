@@ -9,7 +9,7 @@ class ReportBuilder {
   }
 
   buildDailyReport(analysisData) {
-    const { symbol, quote, timestamp, totals, hourlyBreakdown, tierAnalysis, 
+    const { symbol, quote, timestamp, totals, hourlyBreakdown, tierAnalysis, tierComposition,
             atmFlow, complexAnalysis, deltaAnalysis, divergences, 
             institutionalLevels, blocks } = analysisData;
 
@@ -124,163 +124,309 @@ class ReportBuilder {
     report += `• Real Delta C:P = ${t2.ratio.realDelta}\n\n`;
     report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
     report += `🎯 *Takeaway:* ${t2.takeaway}\n\n`;
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // TIER COMPOSITION BREAKDOWN
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-if (analysisData.tierComposition) {
-  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-  report += `📊 *TIER-1 COMPOSITION BREAKDOWN*\n\n`;
-  
-  const comp = analysisData.tierComposition;
-  report += `*Total Tier-1 Prints:* ${comp.totalPrints}\n\n`;
-  
-  if (comp.byType && Object.keys(comp.byType).length > 0) {
-    report += `*By Condition Type:*\n`;
-    
-    Object.entries(comp.byType).forEach(([type, data]) => {
-      if (data.prints > 0) {
-        report += `• *${type}:* ${data.prints} prints | $${this.formatCurrency(data.notional)} (${data.percent}%)\n`;
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (tierComposition) {
+      report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      report += `📊 *TIER-1 COMPOSITION BREAKDOWN*\n\n`;
+      
+      const comp = tierComposition;
+      report += `*Total Tier-1 Prints:* ${comp.totalPrints}\n\n`;
+      
+      if (comp.byType && Object.keys(comp.byType).length > 0) {
+        report += `*By Condition Type:*\n`;
+        
+        Object.entries(comp.byType).forEach(([type, data]) => {
+          if (data.prints > 0) {
+            report += `• *${type}:* ${data.prints} prints | $${this.formatCurrency(data.notional)} (${data.percent}%)\n`;
+          }
+        });
+        report += '\n';
       }
-    });
-    report += '\n';
-  }
-  
-  if (comp.stockOptionCombos && comp.stockOptionCombos.length > 0) {
-    report += `*Stock-Option Combos:*\n`;
-    comp.stockOptionCombos.forEach(combo => {
-      report += `— Stock at $${combo.stockPrice.toFixed(2)} + ${combo.strike}${combo.optionType} = ${combo.intent}\n`;
-    });
-    report += '\n';
-  }
-  
-  if (comp.eliteInstitutional) {
-    const elite = comp.eliteInstitutional;
-    report += `*Elite Institutional:* ${elite.prints} prints | $${this.formatCurrency(elite.notional)} (${elite.percent}%)\n`;
-    if (elite.range) {
-      report += `  Range: $${elite.range.min}-$${elite.range.max}\n`;
+      
+      if (comp.stockOptionCombos && comp.stockOptionCombos.length > 0) {
+        report += `*Stock-Option Combos:*\n`;
+        comp.stockOptionCombos.forEach(combo => {
+          report += `— Stock at $${combo.stockPrice.toFixed(2)} + ${combo.strike}${combo.optionType} = ${combo.intent}\n`;
+        });
+        report += '\n';
+      }
+      
+      if (comp.eliteInstitutional) {
+        const elite = comp.eliteInstitutional;
+        report += `*Elite Institutional:* ${elite.prints} prints | $${this.formatCurrency(elite.notional)} (${elite.percent}%)\n`;
+        if (elite.range) {
+          report += `  Range: $${elite.range.min}-$${elite.range.max}\n`;
+        }
+        if (elite.callSpreads && elite.callSpreads.count > 0) {
+          report += `  Call Spreads: bullish to $${elite.callSpreads.target} (${elite.callSpreads.count} detected, upside capped)\n`;
+        }
+      }
+      report += '\n';
     }
-    if (elite.callSpreads) {
-      report += `  Call Spreads: bullish to $${elite.callSpreads.target} (${elite.callSpreads.count} detected, upside capped)\n`;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // TIER-2 LARGE BLOCK FLOW
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    report += `🐘 *TIER-2 LARGE BLOCK FLOW (Patient | 3-14 DTE)*\n\n`;
+    
+    const t2c = tierAnalysis.tier2;
+    report += `*CALLS:*\n`;
+    report += `• Notional: $${this.formatCurrency(t2c.calls.notional)} (${t2c.calls.prints} prints)\n`;
+    report += `• Real Delta: $${this.formatCurrency(t2c.calls.realDelta)} exposure\n`;
+    report += `• Avg DTE: ${t2c.calls.avgDte} days\n`;
+    report += `• Avg Size: ${this.calculateAvgContracts(t2c.calls)} contracts\n\n`;
+    
+    report += `*PUTS:*\n`;
+    report += `• Notional: $${this.formatCurrency(t2c.puts.notional)} (${t2c.puts.prints} prints)\n`;
+    report += `• Real Delta: $${this.formatCurrency(t2c.puts.realDelta)} exposure\n`;
+    report += `• Avg DTE: ${t2c.puts.avgDte} days\n`;
+    report += `• Avg Size: ${this.calculateAvgContracts(t2c.puts)} contracts\n\n`;
+    
+    report += `📊 *TIER-2 RATIO:*\n`;
+    const t2NotionalRatio = t2c.puts.notional > 0 ? (t2c.calls.notional / t2c.puts.notional).toFixed(2) : '∞';
+    const t2DeltaRatio = Math.abs(t2c.puts.realDelta) > 0 ? (t2c.calls.realDelta / Math.abs(t2c.puts.realDelta)).toFixed(2) : '∞';
+    
+    report += `• Notional C:P = ${t2NotionalRatio} ${t2c.ratio.notionalBullish ? '🐂' : '🐻'}\n`;
+    report += `• Real Delta C:P = ${t2DeltaRatio} ${t2c.ratio.realDeltaBullish ? '🐂' : '🐻'}\n\n`;
+    
+    report += `➡️ *Net Exposure:* $${this.formatCurrency(t2c.netExposure)}\n`;
+    
+    // Calculate call-heavy percentage
+    const totalT2Flow = t2c.calls.notional + Math.abs(t2c.puts.notional);
+    const callPercent = totalT2Flow > 0 ? (t2c.calls.notional / totalT2Flow * 100).toFixed(1) : '0.0';
+    const putPercent = totalT2Flow > 0 ? (Math.abs(t2c.puts.notional) / totalT2Flow * 100).toFixed(1) : '0.0';
+    
+    if (t2c.calls.notional > t2c.puts.notional) {
+      report += `→ Patient institutional flow is ${callPercent}% more CALL-heavy\n`;
+    } else {
+      report += `→ Patient institutional flow is ${putPercent}% more PUT-heavy\n`;
     }
-  }
-  report += '\n';
-}
+    report += `→ $${this.formatCurrency(t2c.calls.notional)} in calls vs $${this.formatCurrency(t2c.puts.notional)} in puts (daily)\n\n`;
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// TIER-2 LARGE BLOCK FLOW
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-report += `🐘 *TIER-2 LARGE BLOCK FLOW (Patient | 3-14 DTE)*\n\n`;
-
-const t2 = tierAnalysis.tier2;
-report += `*CALLS:*\n`;
-report += `• Notional: $${this.formatCurrency(t2.calls.notional)} (${t2.calls.prints} prints)\n`;
-report += `• Real Delta: $${this.formatCurrency(t2.calls.realDelta)} exposure\n`;
-report += `• Avg DTE: ${t2.calls.avgDte} days\n`;
-report += `• Avg Size: ${this.calculateAvgContracts(t2.calls)} contracts\n\n`;
-
-report += `*PUTS:*\n`;
-report += `• Notional: $${this.formatCurrency(t2.puts.notional)} (${t2.puts.prints} prints)\n`;
-report += `• Real Delta: $${this.formatCurrency(t2.puts.realDelta)} exposure\n`;
-report += `• Avg DTE: ${t2.puts.avgDte} days\n`;
-report += `• Avg Size: ${this.calculateAvgContracts(t2.puts)} contracts\n\n`;
-
-report += `📊 *TIER-2 RATIO:*\n`;
-const t2NotionalRatio = t2.puts.notional > 0 ? (t2.calls.notional / t2.puts.notional).toFixed(2) : '∞';
-const t2DeltaRatio = Math.abs(t2.puts.realDelta) > 0 ? (t2.calls.realDelta / Math.abs(t2.puts.realDelta)).toFixed(2) : '∞';
-
-report += `• Notional C:P = ${t2NotionalRatio} ${t2.ratio.notionalBullish ? '🐂' : '🐻'}\n`;
-report += `• Real Delta C:P = ${t2DeltaRatio} ${t2.ratio.realDeltaBullish ? '🐂' : '🐻'}\n\n`;
-
-report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
-
-// Calculate call-heavy percentage
-const totalT2Flow = t2.calls.notional + Math.abs(t2.puts.notional);
-const callPercent = totalT2Flow > 0 ? (t2.calls.notional / totalT2Flow * 100).toFixed(1) : '0.0';
-
-report += `→ Patient institutional flow is ${callPercent}% CALL-heavy\n`;
-report += `→ $${this.formatCurrency(t2.calls.notional)} in calls vs $${this.formatCurrency(t2.puts.notional)} in puts (daily)\n\n`;
-   
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // ATM FLOW
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     report += `🎯 *ATM FLOW (±2% STRIKES)*\n\n`;
-    report += `*CALLS:* $${this.formatCurrency(atmFlow.callNotional)} (${atmFlow.calls} prints)\n`;
-    report += `*PUTS:* $${this.formatCurrency(atmFlow.putNotional)} (${atmFlow.puts} prints)\n`;
-    report += `*Real Delta:* $${this.formatCurrency(atmFlow.netDelta)}\n`;
-    report += `*Net ATM Exposure:* $${this.formatCurrency(atmFlow.netNotional)}\n\n`;
-    report += `→ ${atmFlow.interpretation}\n\n`;
+    
+    const atmRange = quote.price * 0.02;
+    const atmMin = quote.price - atmRange;
+    const atmMax = quote.price + atmRange;
+    
+    report += `ATM Range: $${atmMin.toFixed(2)}-$${atmMax.toFixed(2)} | Spot: $${quote.price.toFixed(2)}\n\n`;
+    
+    const totalATM = atmFlow.callNotional + atmFlow.putNotional;
+    const callPercentATM = totalATM > 0 ? (atmFlow.callNotional / totalATM * 100).toFixed(1) : 0;
+    const putPercentATM = totalATM > 0 ? (atmFlow.putNotional / totalATM * 100).toFixed(1) : 0;
+    
+    // Calculate ratios
+    const notionalRatio = atmFlow.putNotional > 0 ? (atmFlow.callNotional / atmFlow.putNotional).toFixed(2) : atmFlow.callNotional > 0 ? '∞' : '0';
+    const deltaRatio = Math.abs(atmFlow.putDelta) > 0 ? (atmFlow.callDelta / Math.abs(atmFlow.putDelta)).toFixed(2) : atmFlow.callDelta > 0 ? '∞' : '0';
+    
+    report += `*Notional C:P = ${notionalRatio}* | Calls: $${this.formatCurrency(atmFlow.callNotional)}, Puts: $${this.formatCurrency(atmFlow.putNotional)}\n`;
+    report += `*Real Delta C:P = ${deltaRatio}* | Calls: $${this.formatCurrency(atmFlow.callDelta)}, Puts: $${this.formatCurrency(atmFlow.putDelta)}\n`;
+    report += `*Net Delta Exposure:* $${this.formatCurrency(atmFlow.netDelta)}\n\n`;
+    
+    const putDominance = atmFlow.putNotional > atmFlow.callNotional ? 
+      putPercentATM : callPercentATM;
+    
+    if (atmFlow.putNotional > atmFlow.callNotional) {
+      report += `→ ATM puts outweigh calls by ${putDominance}%\n`;
+    } else if (atmFlow.callNotional > atmFlow.putNotional) {
+      report += `→ ATM calls outweigh puts by ${putDominance}%\n`;
+    } else {
+      report += `→ ATM flow balanced\n`;
+    }
+    report += '\n';
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // COMPLEX STRATEGIES
+    // COMPLEX STRATEGY ANALYSIS
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (complexAnalysis.total > 0) {
       report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
       report += `🧩 *COMPLEX STRATEGY ANALYSIS*\n\n`;
       report += `*Total Complex Trades:* ${complexAnalysis.total}\n\n`;
       
+      // Count by intent
+      let bullishCount = 0;
+      let bearishCount = 0;
+      let volCount = 0;
+      let hedgeCount = 0;
+      
       Object.entries(complexAnalysis.byType).forEach(([type, data]) => {
         if (data.count > 0) {
-          report += `*${type}:* ${data.count} trades | $${this.formatCurrency(data.notional)}\n`;
+          if (data.intent === 'bullish') bullishCount += data.count;
+          if (data.intent === 'bearish') bearishCount += data.count;
+          if (data.intent === 'volatility' || data.intent === 'volatility play') volCount += data.count;
+          if (data.intent === 'hedge' || data.intent === 'protected') hedgeCount += data.count;
         }
       });
       
+      report += `*BY STRATEGY TYPE:*\n`;
+      
+      // Call Spreads
+      const callSpreads = complexAnalysis.byType.CALL_SPREAD;
+      if (callSpreads && callSpreads.count > 0) {
+        report += `  *Call Spreads:* ${callSpreads.count} (Bullish, Defined Risk)\n`;
+        report += `  → Bullish positioning but capped upside\n`;
+      }
+      
+      // Put Spreads
+      const putSpreads = complexAnalysis.byType.PUT_SPREAD;
+      if (putSpreads && putSpreads.count > 0) {
+        report += `  *Put Spreads:* ${putSpreads.count} (Bearish, Defined Risk)\n`;
+        report += `  → Bearish positioning with limited downside\n`;
+      }
+      
+      // Straddles/Strangles
+      const straddles = complexAnalysis.byType.STRADDLE;
+      const strangles = complexAnalysis.byType.STRANGLE;
+      const volTrades = (straddles?.count || 0) + (strangles?.count || 0);
+      if (volTrades > 0) {
+        report += `  *Straddles/Strangles:* ${volTrades} (Volatility Play)\n`;
+        report += `  → Expecting big move (direction unknown)\n`;
+      }
+      
+      // Protective Puts
+      const protectivePuts = complexAnalysis.byType.PROTECTIVE_PUT;
+      if (protectivePuts && protectivePuts.count > 0) {
+        report += `  *Protective Puts:* ${protectivePuts.count} (Downside Hedge)\n`;
+        report += `  → Long stock + long puts = protected long\n`;
+      }
+      
+      // Covered Calls
+      const coveredCalls = complexAnalysis.byType.COVERED_CALL;
+      if (coveredCalls && coveredCalls.count > 0) {
+        report += `  *Covered Calls:* ${coveredCalls.count} (Income, Capped Upside)\n`;
+        report += `  → Long stock + short calls = income generation\n`;
+      }
+      
+      // Collars
+      const collars = complexAnalysis.byType.COLLAR;
+      if (collars && collars.count > 0) {
+        report += `  *Collars:* ${collars.count} (Protected, Capped)\n`;
+        report += `  → Long stock + long puts + short calls = protected range\n`;
+      }
+      
+      report += `\n*BY INTENT:*\n`;
+      const totalIntent = bullishCount + bearishCount + volCount + hedgeCount;
+      
+      if (bullishCount > 0) {
+        const percent = totalIntent > 0 ? Math.round((bullishCount / totalIntent) * 100) : 0;
+        report += `  *Bullish:* ${bullishCount} (${percent}%)\n`;
+      }
+      
+      if (bearishCount > 0) {
+        const percent = totalIntent > 0 ? Math.round((bearishCount / totalIntent) * 100) : 0;
+        report += `  *Bearish:* ${bearishCount} (${percent}%)\n`;
+      }
+      
+      if (volCount > 0) {
+        const percent = totalIntent > 0 ? Math.round((volCount / totalIntent) * 100) : 0;
+        report += `  *Volatility:* ${volCount} (${percent}%)\n`;
+      }
+      
+      if (hedgeCount > 0) {
+        const percent = totalIntent > 0 ? Math.round((hedgeCount / totalIntent) * 100) : 0;
+        report += `  *Hedge:* ${hedgeCount} (${percent}%)\n`;
+      }
+      
       if (complexAnalysis.dominantStrategy) {
         const dom = complexAnalysis.dominantStrategy;
-        report += `\n⭐ *DOMINANT STRATEGY:* ${dom.type}\n`;
-        report += `• Intent: ${dom.intent}\n`;
-        report += `• Notional: $${this.formatCurrency(dom.notional)}\n`;
+        report += `\n⭐ *DOMINANT PATTERN:* ${dom.type}\n`;
+        
+        if (dom.type === 'CALL_SPREAD') {
+          report += `→ Bullish positioning with defined risk/reward\n`;
+          report += `→ Watch for resistance at spread strikes\n`;
+        } else if (dom.type === 'PUT_SPREAD') {
+          report += `→ Bearish positioning with limited downside\n`;
+          report += `→ Watch for support at spread strikes\n`;
+        } else if (dom.type === 'STRADDLE' || dom.type === 'STRANGLE') {
+          report += `→ Volatility expansion expected\n`;
+          report += `→ Direction unknown, but expecting large move\n`;
+        } else if (dom.type === 'PROTECTIVE_PUT') {
+          report += `→ Defensive positioning with downside protection\n`;
+          report += `→ Hedging existing long exposure\n`;
+        } else if (dom.type === 'COVERED_CALL') {
+          report += `→ Income generation with capped upside\n`;
+          report += `→ Neutral to slightly bullish outlook\n`;
+        }
       }
       report += '\n';
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // TOP INSTITUTIONAL PRINTS
+    // TOP INSTITUTIONAL PRINTS BY TIER
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (blocks && blocks.length > 0) {
       report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-      report += `🏆 *TOP INSTITUTIONAL PRINTS*\n\n`;
+      report += `🏆 *TOP INSTITUTIONAL PRINTS BY TIER*\n\n`;
       
       blocks.slice(0, 5).forEach((block, idx) => {
         const time = moment.tz(block.timestamp, this.timezone).format('HH:mm');
         const type = block.option_type === 'CALL' ? 'C' : 'P';
-        const distPercent = ((block.strike - quote.price) / quote.price * 100).toFixed(1);
+        const distPercent = ((block.strike - quote.price) / quote.price * 100).toFixed(2);
+        const distSign = parseFloat(distPercent) >= 0 ? '+' : '';
+        
+        // Check if at spot (within 0.1%)
+        const atSpot = Math.abs(parseFloat(distPercent)) <= 0.1;
+        const atSpotLabel = atSpot ? ' < AT SPOT' : '';
         
         report += `${idx + 1}) *${block.strike}${type}_${block.expiration}* @ ${time}\n`;
         report += `   ${block.contracts} contracts × $${this.formatCurrency(block.notional)}\n`;
         report += `   → Real Delta: $${this.formatCurrency(block.real_delta * block.notional || 0)}\n`;
-        report += `   → ${this.getBlockType(block)} | DTE: ${block.dte || 'N/A'} | Strike: ${distPercent}%\n`;
+        report += `   → ${this.getBlockType(block)} | DTE: ${block.dte || 'N/A'} | Strike: ${distSign}${distPercent}%${atSpotLabel}\n`;
         report += `   → ${this.interpretBlock(block, quote.price)}\n\n`;
       });
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // DELTA CONCENTRATION
+    // TOP 10 REAL DELTA CONCENTRATION POINTS
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (deltaAnalysis.levels.length > 0) {
       report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-      report += `🧱 *TOP DELTA CONCENTRATION POINTS*\n\n`;
+      report += `🧱 *TOP 10 REAL DELTA CONCENTRATION POINTS (Daily)*\n\n`;
       
       deltaAnalysis.levels.slice(0, 10).forEach((level, idx) => {
-        const distSign = level.distancePercent >= 0 ? '+' : '';
-        report += `${idx + 1}) *$${level.strike}* ${distSign}${level.distancePercent.toFixed(1)}%\n`;
-        report += `   Real Delta: $${this.formatCurrency(level.totalDelta)} | Prints: ${level.callPrints + level.putPrints}\n`;
-        report += `   Notional: $${this.formatCurrency(level.callNotional + level.putNotional)}\n\n`;
+        const distPercent = ((level.strike - quote.price) / quote.price * 100).toFixed(2);
+        const distSign = parseFloat(distPercent) >= 0 ? '+' : '';
+        
+        // Check if at spot (within 0.1%)
+        const atSpot = Math.abs(parseFloat(distPercent)) <= 0.1;
+        const atSpotLabel = atSpot ? ' < AT SPOT' : '';
+        
+        // Format distance for display
+        const displayDistance = atSpot ? '' : ` (${distSign}${distPercent})`;
+        
+        const optionType = level.callDelta > Math.abs(level.putDelta) ? 'C' : 'P';
+        const realDelta = level.callDelta + level.putDelta;
+        const realDeltaFormatted = realDelta >= 0 ? `$${this.formatCurrency(realDelta)}` : `$${this.formatCurrency(Math.abs(realDelta))}`;
+        
+        report += `${idx + 1}) ${level.strike}${optionType}_${this.getExpirationFromFlow(level)}: ${realDelta >= 0 ? '+' : '-'}$${this.formatCurrency(Math.abs(realDelta))} real delta\n`;
+        report += `   (${level.callPrints + level.putPrints} prints, $${this.formatCurrency(level.callNotional + level.putNotional)})${displayDistance}${atSpotLabel}\n`;
       });
       
       if (deltaAnalysis.putWalls.length > 0) {
         const largestPut = deltaAnalysis.putWalls[0];
-        report += `🧱 *Largest PUT Wall (Support):* $${largestPut.strike} (-${Math.abs(largestPut.distancePercent).toFixed(1)}%)\n`;
+        const putDist = ((largestPut.strike - quote.price) / quote.price * 100).toFixed(2);
+        const putDistSign = parseFloat(putDist) >= 0 ? '+' : '';
+        
+        report += `\n→ *Largest put concentration:* ${largestPut.strike}P_${this.getExpirationFromFlow(largestPut)}\n`;
+        report += `  $${this.formatCurrency(Math.abs(largestPut.putDelta))} delta wall defending $${largestPut.strike}\n`;
       }
       
       if (deltaAnalysis.callWalls.length > 0) {
         const largestCall = deltaAnalysis.callWalls[0];
-        report += `🚧 *Largest CALL Wall (Resistance):* $${largestCall.strike} (+${largestCall.distancePercent.toFixed(1)}%)\n`;
+        const callDist = ((largestCall.strike - quote.price) / quote.price * 100).toFixed(2);
+        
+        report += `→ *Largest call concentration:* ${largestCall.strike}C_${this.getExpirationFromFlow(largestCall)}\n`;
+        report += `  $${this.formatCurrency(largestCall.callDelta)} delta resistance at $${largestCall.strike}\n`;
       }
-      
-      report += `🎯 *Dealer Positioning:* ${this.getDealerPositioningExplanation(deltaAnalysis, quote.price)}\n\n`;
+      report += '\n';
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -316,29 +462,118 @@ report += `→ $${this.formatCurrency(t2.calls.notional)} in calls vs $${this.fo
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     report += `📈 *DAILY FLOW SUMMARY*\n\n`;
-    report += `📊 Total Institutional Trades: ${totals.totalTrades}\n`;
-    report += `💰 Total Notional: $${this.formatCurrency(totals.totalNotional)}\n`;
-    report += `🧮 Net Delta Exposure: $${this.formatCurrency(totals.netDeltaExposure)}\n\n`;
-    
-    const t1Bullish = tierAnalysis.tier1.ratio.notionalBullish;
-    const t2Bullish = tierAnalysis.tier2.ratio.notionalBullish;
-    const atmBullish = atmFlow.netNotional > 0;
-    
-    report += `• Tier-1 Options: ${t1Bullish ? '🐂 BULLISH' : '🐻 BEARISH'}\n`;
-    report += `• Tier-2 Options: ${t2Bullish ? '🐂 BULLISH' : '🐻 BEARISH'}\n`;
-    report += `• ATM Positioning: ${atmBullish ? '🐂 BULLISH' : '🐻 BEARISH'}\n\n`;
+
+    report += `*Total Institutional Trades:* ${totals.totalTrades}\n`;
+    report += `*Total Notional:* $${this.formatCurrency(totals.totalNotional)}\n`;
+    report += `*Net Delta Exposure:* $${this.formatCurrency(totals.netDeltaExposure)}\n`;
+
+    // Calculate equity flow (simplified - would need actual equity flow data)
+    const equityFlow = 0; // This would come from separate equity flow analysis
+    const equityFlowFormatted = equityFlow >= 0 ? `$${this.formatCurrency(equityFlow)}` : `$${this.formatCurrency(Math.abs(equityFlow))}`;
+    const equitySentiment = Math.abs(equityFlow) > totals.totalNotional * 0.05 ? 
+      (equityFlow > 0 ? 'BULLISH' : 'BEARISH') : 'NEUTRAL';
+
+    report += `*Equity Flow:* ${equityFlowFormatted} ${equitySentiment}\n\n`;
+
+    // Tier-1 options summary
+    const t1Summary = tierAnalysis.tier1;
+    const t1Total = t1Summary.calls.notional + Math.abs(t1Summary.puts.notional);
+    const t1BullishPercent = t1Summary.calls.notional > t1Summary.puts.notional ? 
+      (t1Total > 0 ? ((t1Summary.calls.notional - Math.abs(t1Summary.puts.notional)) / t1Total * 100).toFixed(0) : '0') :
+      (t1Total > 0 ? ((Math.abs(t1Summary.puts.notional) - t1Summary.calls.notional) / t1Total * 100).toFixed(0) : '0');
+
+    report += `• *Tier-1 Options:* ${t1Summary.calls.notional > t1Summary.puts.notional ? '+' : '-'}${t1BullishPercent}% ${t1Summary.calls.notional > t1Summary.puts.notional ? 'BULLISH' : 'BEARISH'}\n`;
+    report += `  ($${this.formatCurrency(t1Summary.calls.notional)} calls vs $${this.formatCurrency(Math.abs(t1Summary.puts.notional))} puts)\n`;
+
+    // Tier-2 options summary
+    const t2Summary = tierAnalysis.tier2;
+    const t2Total = t2Summary.calls.notional + Math.abs(t2Summary.puts.notional);
+    const t2BullishPercent = t2Summary.calls.notional > t2Summary.puts.notional ? 
+      (t2Total > 0 ? ((t2Summary.calls.notional - Math.abs(t2Summary.puts.notional)) / t2Total * 100).toFixed(0) : '0') :
+      (t2Total > 0 ? ((Math.abs(t2Summary.puts.notional) - t2Summary.calls.notional) / t2Total * 100).toFixed(0) : '0');
+
+    report += `• *Tier-2 Options:* ${t2Summary.calls.notional > t2Summary.puts.notional ? '+' : '-'}${t2BullishPercent}% ${t2Summary.calls.notional > t2Summary.puts.notional ? 'BULLISH' : 'BEARISH'}\n`;
+    report += `  ($${this.formatCurrency(t2Summary.calls.notional)} calls vs $${this.formatCurrency(Math.abs(t2Summary.puts.notional))} puts)\n`;
+
+    // ATM positioning summary
+    const atmTotal = atmFlow.callNotional + atmFlow.putNotional;
+    const atmBullishPercent = atmFlow.callNotional > atmFlow.putNotional ?
+      (atmTotal > 0 ? ((atmFlow.callNotional - atmFlow.putNotional) / atmTotal * 100).toFixed(0) : '0') :
+      (atmTotal > 0 ? ((atmFlow.putNotional - atmFlow.callNotional) / atmTotal * 100).toFixed(0) : '0');
+
+    const atmDescription = atmFlow.callNotional > atmFlow.putNotional ? 
+      '(near-money call preference)' : '(near-money put hedging)';
+
+    report += `• *ATM Positioning:* ${atmFlow.callNotional > atmFlow.putNotional ? '+' : '-'}${atmBullishPercent}% ${atmFlow.callNotional > atmFlow.putNotional ? 'BULLISH' : 'BEARISH'}\n`;
+    report += `  ${atmDescription}\n\n`;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // INSTITUTIONAL THESIS
+    // INSTITUTIONAL THESIS (FULL DAY)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-    report += `🎯 *INSTITUTIONAL THESIS*\n\n`;
-    
+    report += `🎯 *INSTITUTIONAL THESIS (Full Day)*\n\n`;
+
     const thesis = this.generateInstitutionalThesis(analysisData);
-    thesis.bullets.forEach(bullet => {
-      report += `• ${bullet}\n`;
-    });
-    
+
+    // Light equity flow comment
+    const equityFlowSize = Math.abs(equityFlow);
+    const equityFlowComment = equityFlowSize < totals.totalNotional * 0.1 ? 
+      '**Light equity flow**' : 
+      equityFlow > 0 ? '**Strong equity buying**' : '**Heavy equity selling**';
+      
+    report += `${equityFlowComment} (${equityFlow >= 0 ? '+' : ''}$${this.formatCurrency(equityFlow)} net)\n`;
+
+    // Urgent vs patient flow
+    const urgentFlowComment = t1Summary.calls.notional > t1Summary.puts.notional ? 
+      `**Urgent institutional flow is ${t1BullishPercent}% more CALL-heavy** (0-3 DTE speculation)` :
+      `**Urgent institutional flow is ${t1BullishPercent}% more PUT-heavy** (0-3 DTE hedging)`;
+      
+    report += `${urgentFlowComment}\n`;
+
+    const patientFlowComment = t2Summary.calls.notional > t2Summary.puts.notional ?
+      `**Patient institutional flow is ${t2BullishPercent}% more CALL-heavy** (3-14 DTE conviction)` :
+      `**Patient institutional flow is ${t2BullishPercent}% more PUT-heavy** (3-14 DTE defense)`;
+      
+    report += `${patientFlowComment}\n`;
+
+    // ATM flow comment
+    const atmFlowComment = atmFlow.putNotional > atmFlow.callNotional ?
+      `**ATM puts outweigh calls** by ${atmBullishPercent}%` :
+      `**ATM calls outweigh puts** by ${atmBullishPercent}%`;
+      
+    report += `${atmFlowComment}\n`;
+
+    // Key institutional levels
+    report += `**KEY INSTITUTIONAL LEVELS:**\n`;
+
+    if (institutionalLevels.support.length > 0) {
+      const supportLevels = institutionalLevels.support.slice(0, 3).map(l => `$${l.strike}`).join(', ');
+      report += `Support: ${supportLevels}\n`;
+    }
+
+    if (institutionalLevels.resistance.length > 0) {
+      const resistanceLevels = institutionalLevels.resistance.slice(0, 3).map(l => `$${l.strike}`).join(', ');
+      report += `Resistance: ${resistanceLevels}\n`;
+    }
+
+    // Interpretation based on conflicting signals
+    report += `\n**INTERPRETATION:**\n`;
+
+    const hasConflict = (t1Summary.calls.notional > t1Summary.puts.notional) !== (t2Summary.calls.notional > t2Summary.puts.notional);
+    if (hasConflict) {
+      if (t1Summary.calls.notional > t1Summary.puts.notional && t2Summary.puts.notional > t2Summary.calls.notional) {
+        report += `Conflicting signals: Urgent flow bullish but patient flow bearish. Near-term strength possible, but caution advised.\n`;
+      } else if (t1Summary.puts.notional > t1Summary.calls.notional && t2Summary.calls.notional > t2Summary.puts.notional) {
+        report += `Conflicting signals: Urgent flow bearish but patient flow bullish. Near-term dip possible, but recovery expected.\n`;
+      }
+    } else {
+      if (t1Summary.calls.notional > t1Summary.puts.notional) {
+        report += `Harmonious bullish flow across all timeframes. Expect continued upward pressure.\n`;
+      } else {
+        report += `Harmonious bearish flow across all timeframes. Expect continued downward pressure.\n`;
+      }
+    }
+
     report += `\n🎯 *Confidence Score:* ${thesis.confidence}/100\n\n`;
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     report += `*END OF INSTITUTIONAL FLOW REPORT*\n`;
@@ -391,11 +626,11 @@ report += `→ $${this.formatCurrency(t2.calls.notional)} in calls vs $${this.fo
     const isBuy = block.side === 'BUY';
     const distance = ((block.strike - spotPrice) / spotPrice * 100).toFixed(1);
     
-    if (isCall && isBuy && parseFloat(distance) < 2) {
+    if (isCall && isBuy && Math.abs(parseFloat(distance)) <= 2) {
       return 'ATM call buying - directional speculation';
     } else if (isCall && isBuy && parseFloat(distance) >= 2) {
       return 'OTM call buying - leverage/volatility play';
-    } else if (!isCall && isBuy && Math.abs(parseFloat(distance)) < 2) {
+    } else if (!isCall && isBuy && Math.abs(parseFloat(distance)) <= 2) {
       return 'ATM put buying - hedging/protection';
     } else if (!isCall && isBuy && parseFloat(distance) < -2) {
       return 'OTM put buying - tail risk protection';
@@ -434,79 +669,55 @@ report += `→ $${this.formatCurrency(t2.calls.notional)} in calls vs $${this.fo
     return 'Asymmetric dealer exposure detected';
   }
 
-  generateInstitutionalThesis(analysisData) {
-    const { totals, tierAnalysis, atmFlow, divergences, institutionalLevels } = analysisData;
+  calculateAvgContracts(tierData) {
+    if (!tierData.avgSize || tierData.avgSize === 0) return 0;
     
-    const bullets = [];
+    // Estimate contracts based on avg size (assuming avg option price ~$2.50)
+    const avgOptionPrice = 2.50;
+    const estimatedContracts = Math.round(tierData.avgSize / (avgOptionPrice * 100));
+    
+    return estimatedContracts || 0;
+  }
+
+  getExpirationFromFlow(flow) {
+    // Extract or generate expiration date from flow data
+    if (flow.expiration) {
+      const date = new Date(flow.expiration);
+      return date.toISOString().split('T')[0];
+    }
+    // Return a placeholder or calculate from DTE
+    const today = new Date();
+    const expiration = new Date(today);
+    expiration.setDate(today.getDate() + 7); // Default to 7 days out
+    return expiration.toISOString().split('T')[0];
+  }
+
+  generateInstitutionalThesis(analysisData) {
+    const { totals, tierAnalysis, atmFlow, divergences } = analysisData;
+    
     let confidence = 70; // Base confidence
     
-    // 1. Equity flow tone
-    if (totals.bullish) {
-      bullets.push('Overall institutional tone is BULLISH with net buying pressure');
-      confidence += 5;
-    } else if (totals.bearish) {
-      bullets.push('Overall institutional tone is BEARISH with net selling pressure');
-      confidence += 5;
-    } else {
-      bullets.push('Institutional flow shows NEUTRAL bias with balanced buying/selling');
-    }
+    // Adjust confidence based on data quality
+    if (totals.classificationRate > 80) confidence += 10;
+    if (totals.classificationRate < 50) confidence -= 15;
     
-    // 2. Urgent vs patient conflict
-    const t1Bullish = tierAnalysis.tier1.ratio.notionalBullish;
-    const t2Bullish = tierAnalysis.tier2.ratio.notionalBullish;
+    // Adjust for divergence detection
+    if (divergences.length > 1 && divergences[0].confidence > 70) confidence -= 10;
     
-    if (t1Bullish !== t2Bullish) {
-      bullets.push(`Conflict detected: ${t1Bullish ? 'Urgent' : 'Patient'} flow is ${t1Bullish ? 'bullish' : 'bearish'} vs ${t2Bullish ? 'Patient' : 'Urgent'} flow is ${t2Bullish ? 'bullish' : 'bearish'}`);
-      confidence -= 10;
-    } else {
-      bullets.push(`Harmonious flow: Both urgent and patient positioning align ${t1Bullish ? 'bullishly' : 'bearishly'}`);
-      confidence += 5;
-    }
+    // Adjust for conflicting signals
+    const t1 = tierAnalysis.tier1;
+    const t2 = tierAnalysis.tier2;
+    const hasConflict = (t1.calls.notional > t1.puts.notional) !== (t2.calls.notional > t2.puts.notional);
+    if (hasConflict) confidence -= 10;
     
-    // 3. Dealer positioning
-    if (atmFlow.netNotional > atmFlow.callNotional * 0.3) {
-      bullets.push('Dealers likely long gamma from ATM call buying - supports orderly moves');
-      confidence += 5;
-    } else if (atmFlow.netNotional < -atmFlow.putNotional * 0.3) {
-      bullets.push('Dealers likely short gamma from ATM put selling - risk of amplified moves');
-      confidence -= 5;
-    }
+    // Adjust for data completeness
+    if (totals.totalTrades < 10) confidence -= 20;
+    if (totals.totalTrades > 100) confidence += 10;
     
-    // 4. Key support/resistance
-    if (institutionalLevels.support.length > 0 && institutionalLevels.resistance.length > 0) {
-      const support = institutionalLevels.support[0];
-      const resistance = institutionalLevels.resistance[0];
-      
-      bullets.push(`Key levels: Support at $${support.strike}, Resistance at $${resistance.strike}`);
-      confidence += 5;
-    }
-    
-    // 5. Expected near-term behavior
-    if (divergences.some(d => d.type.includes('VOL_CRUSH'))) {
-      bullets.push('Expect range-bound price action with volatility compression');
-      confidence += 5;
-    } else if (t1Bullish && atmFlow.netNotional > 0) {
-      bullets.push('Near-term bias is for continuation of bullish momentum');
-      confidence += 10;
-    } else if (!t1Bullish && atmFlow.netNotional < 0) {
-      bullets.push('Near-term bias is for defensive/range-bound trading');
-      confidence += 5;
-    }
-    
-    // 6. Flow quality assessment
-    if (totals.classificationRate > 80) {
-      bullets.push('High-quality flow data with clear institutional intent');
-      confidence += 5;
-    } else if (totals.classificationRate < 50) {
-      bullets.push('Flow data quality limited - lower confidence in interpretation');
-      confidence -= 10;
-    }
-    
-    confidence = Math.max(0, Math.min(100, confidence));
+    confidence = Math.max(0, Math.min(100, Math.round(confidence)));
     
     return {
-      bullets: bullets.slice(0, 6), // Max 6 bullets
-      confidence: Math.round(confidence)
+      confidence
     };
   }
 }
