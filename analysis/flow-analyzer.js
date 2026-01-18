@@ -40,6 +40,7 @@ class FlowAnalyzer {
     const processedFlow = this.processFlowData(flowData, quote.price);
     const hourlyBreakdown = this.calculateHourlyBreakdown(processedFlow);
     const tierAnalysis = this.tierAnalyzer.analyzeTiers(processedFlow);
+    const tierComposition = this.analyzeTierComposition(processedFlow);
     const atmFlow = this.calculateATMFlow(processedFlow, quote.price);
     const complexAnalysis = this.analyzeComplexTrades(complexTrades);
     const deltaAnalysis = this.analyzeDeltaConcentration(deltaConcentration, quote.price);
@@ -56,6 +57,7 @@ class FlowAnalyzer {
       flow: processedFlow,
       hourlyBreakdown,
       tierAnalysis,
+      tierComposition,
       atmFlow,
       complexAnalysis,
       deltaAnalysis,
@@ -97,6 +99,11 @@ class FlowAnalyzer {
         flowType = flow.complex_type;
       }
       
+      // Extract additional fields for tier composition
+      const stockPrice = flow.underlying_price || flow.stock_price || 0;
+      const isStockOptionCombo = flow.stock_option_combo || 
+                                (stockPrice > 0 && flow.option_type && flow.strike);
+      
       return {
         ...flow,
         real_delta: realDelta,
@@ -105,9 +112,160 @@ class FlowAnalyzer {
         distance_absolute: distanceAbsolute,
         atm: Math.abs(distancePercent) <= 2,
         flow_type: flowType,
-        hour: new Date(flow.timestamp).getHours()
+        hour: new Date(flow.timestamp).getHours(),
+        stock_price: stockPrice,
+        stock_option_combo: isStockOptionCombo,
+        // Add DTE calculation
+        dte: flow.dte || this.calculateDTE(flow.expiration)
       };
     });
+  }
+
+  calculateDTE(expirationDate) {
+    if (!expirationDate) return 0;
+    try {
+      const exp = new Date(expirationDate);
+      const now = new Date();
+      const diffTime = exp - now;
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return Math.max(0, diffDays);
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  analyzeTierComposition(flowData) {
+    // Filter for Tier-1 only (0-3 DTE)
+    const tier1Flow = flowData.filter(f => f.dte >= 0 && f.dte <= 3);
+    
+    if (tier1Flow.length === 0) {
+      return null;
+    }
+    
+    // Classify flow types
+    const byType = {
+      'Tier 1 Blocks': { prints: 0, notional: 0 },
+      'Standard Institutional': { prints: 0, notional: 0 },
+      'Elite Institutional': { prints: 0, notional: 0 },
+      'Stock-Option Combos': { prints: 0, notional: 0 }
+    };
+    
+    // Analyze stock-option combos
+    const stockOptionCombos = [];
+    const eliteInstitutional = {
+      prints: 0,
+      notional: 0,
+      strikes: [],
+      callSpreads: { count: 0, target: null }
+    };
+    
+    // Track call spreads for elite institutional
+    const callSpreadStrikes = [];
+    
+    // Analyze each flow
+    tier1Flow.forEach(flow => {
+      const notional = flow.notional || 0;
+      const contracts = flow.contracts || 0;
+      
+      // Classify by size
+      if (notional >= 10000000) {
+        byType['Elite Institutional'].prints++;
+        byType['Elite Institutional'].notional += notional;
+        
+        eliteInstitutional.prints++;
+        eliteInstitutional.notional += notional;
+        eliteInstitutional.strikes.push(flow.strike);
+        
+        // Detect call spreads
+        if (flow.option_type === 'CALL' && (flow.flow_type === 'CALL_SPREAD' || flow.complex_type === 'CALL_SPREAD')) {
+          eliteInstitutional.callSpreads.count++;
+          if (!eliteInstitutional.callSpreads.target || flow.strike > eliteInstitutional.callSpreads.target) {
+            eliteInstitutional.callSpreads.target = flow.strike;
+          }
+          callSpreadStrikes.push(flow.strike);
+        }
+        
+      } else if (notional >= 1000000) {
+        byType['Tier 1 Blocks'].prints++;
+        byType['Tier 1 Blocks'].notional += notional;
+        
+      } else if (notional >= 100000) {
+        byType['Standard Institutional'].prints++;
+        byType['Standard Institutional'].notional += notional;
+      }
+      
+      // Detect stock-option combos
+      if (flow.stock_option_combo && flow.stock_price) {
+        byType['Stock-Option Combos'].prints++;
+        byType['Stock-Option Combos'].notional += notional;
+        
+        stockOptionCombos.push({
+          stockPrice: flow.stock_price,
+          strike: flow.strike,
+          optionType: flow.option_type === 'CALL' ? 'C' : 'P',
+          intent: this.detectStockOptionIntent(flow)
+        });
+      }
+    });
+    
+    // Calculate percentages
+    const totalNotional = Object.values(byType).reduce((sum, type) => sum + type.notional, 0);
+    
+    Object.keys(byType).forEach(type => {
+      if (totalNotional > 0) {
+        byType[type].percent = ((byType[type].notional / totalNotional) * 100).toFixed(0);
+      } else {
+        byType[type].percent = 0;
+      }
+    });
+    
+    // Calculate elite range
+    if (eliteInstitutional.strikes.length > 0) {
+      eliteInstitutional.range = {
+        min: Math.min(...eliteInstitutional.strikes),
+        max: Math.max(...eliteInstitutional.strikes)
+      };
+      eliteInstitutional.percent = totalNotional > 0 
+        ? ((eliteInstitutional.notional / totalNotional) * 100).toFixed(0) 
+        : 0;
+    }
+    
+    // If we detected call spreads but no specific target, use the max strike
+    if (eliteInstitutional.callSpreads.count > 0 && !eliteInstitutional.callSpreads.target) {
+      eliteInstitutional.callSpreads.target = Math.max(...callSpreadStrikes);
+    }
+    
+    return {
+      totalPrints: tier1Flow.length,
+      byType,
+      stockOptionCombos: stockOptionCombos.slice(0, 5), // Limit to top 5
+      eliteInstitutional: eliteInstitutional.prints > 0 ? eliteInstitutional : null
+    };
+  }
+
+  detectStockOptionIntent(flow) {
+    const isCall = flow.option_type === 'CALL';
+    const isBuy = flow.side === 'BUY';
+    const stockPrice = flow.stock_price || 0;
+    const strike = flow.strike || 0;
+    
+    if (!isCall && isBuy && strike >= stockPrice * 0.95) {
+      return `Protective Put (hedged at $${strike})`;
+    } else if (!isCall && isBuy && strike < stockPrice * 0.95) {
+      return `Tail Hedge (protection at $${strike})`;
+    } else if (isCall && !isBuy && strike > stockPrice) {
+      return `Covered Call (income at $${strike})`;
+    } else if (!isCall && !isBuy && strike < stockPrice) {
+      return `Cash-Secured Put (entry at $${strike})`;
+    } else if (isCall && isBuy && strike < stockPrice) {
+      return `Stock Replacement (leverage)`;
+    } else if (isCall && isBuy && strike > stockPrice) {
+      return `Speculative Call (breakout play)`;
+    } else if (!isCall && isBuy) {
+      return `Protective Put`;
+    }
+    
+    return 'Stock-Option Combo';
   }
 
   calculateHourlyBreakdown(flowData) {
