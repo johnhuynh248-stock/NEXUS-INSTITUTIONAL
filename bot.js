@@ -3,6 +3,7 @@ const config = require('./config');
 const ReportBuilder = require('./reports/report-builder');
 const FlowAnalyzer = require('./analysis/flow-analyzer');
 const Logger = require('./utils/logger');
+const moment = require('moment-timezone');
 
 class EliteInstitutionalFlowBot {
   constructor() {
@@ -49,6 +50,15 @@ class EliteInstitutionalFlowBot {
       const symbol = match[1].toUpperCase().trim();
       
       await this.generateFlowReport(chatId, symbol);
+    });
+
+    // Historical flow report command (new)
+    this.bot.onText(/\/flow_hist (.+) (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match[1].toUpperCase().trim();
+      const date = match[2].trim(); // YYYY-MM-DD format
+      
+      await this.generateHistoricalFlowReport(chatId, symbol, date);
     });
 
     // Multi-symbol flow
@@ -111,11 +121,13 @@ class EliteInstitutionalFlowBot {
 
 *AVAILABLE COMMANDS:*
 /flow [SYMBOL] - Generate institutional flow report
+/flow_hist [SYMBOL] [YYYY-MM-DD] - Historical flow report
 /multiflow [SYM1,SYM2,...] - Multi-symbol flow (max ${config.app.maxSymbols})
 /status - Check bot status
 /help - Show this help
 
 *Example:* \`/flow SPY\` or \`/flow AAPL\`
+*Historical:* \`/flow_hist SPY 2024-03-15\`
 
 ⚠️ *This is NOT retail analysis. This is hedge-fund grade institutional flow.*
     `;
@@ -149,10 +161,16 @@ class EliteInstitutionalFlowBot {
 ❌ ZERO overlap allowed
 
 *DATA VALIDATION:*
-• SAME-DAY data only
+• SAME-DAY data only for each report
 • REAL production APIs only
 • NO hallucinated data
 • Institutional blocks only (min $100k)
+
+*24/7 AVAILABILITY:*
+• Market hours: Real-time flow analysis
+• After hours: Previous session analysis
+• Weekends: Last trading day analysis
+• Holidays: Most recent trading day
 
 *Usage:* Simply send a stock symbol (e.g., "SPY") or use /flow command
     `;
@@ -165,13 +183,17 @@ class EliteInstitutionalFlowBot {
 
   async sendStatus(chatId) {
     const now = new Date();
+    const nyTime = new Date(now.toLocaleString('en-US', { timeZone: config.app.timezone }));
+    const isMarketOpen = this.isMarketOpen();
+    const tradingDate = this.getTradingDate();
+    
     const statusMessage = `
 🏛️ *BOT STATUS REPORT*
 
 *System Status:* ✅ OPERATIONAL
-*Last Update:* ${now.toISOString()}
-*Timezone:* ${config.app.timezone}
-*Market Session:* ${config.app.sessionStart} - ${config.app.sessionEnd}
+*Current Time:* ${nyTime.toLocaleTimeString('en-US')} ET
+*Trading Date:* ${tradingDate}
+*Market Status:* ${isMarketOpen ? '✅ OPEN' : '❌ CLOSED'}
 
 *API Status:*
 • Tradier API: ✅ Connected
@@ -180,11 +202,11 @@ class EliteInstitutionalFlowBot {
 *Active Sessions:* ${this.userSessions.size}
 *Memory Usage:* ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB
 
-*Data Integrity:* ✅ STRICT RULES ENFORCED
-• Same-day data only
-• No DTE mixing
-• No hallucination
-• Institutional blocks only
+*Data Availability:*
+• Real-time flow: ${isMarketOpen ? '✅ Active' : '❌ Market Closed'}
+• Historical analysis: ✅ 24/7 Available
+• Weekend data: ✅ Last trading day
+• Data integrity: ✅ STRICT RULES ENFORCED
     `;
 
     await this.bot.sendMessage(chatId, statusMessage, {
@@ -192,34 +214,94 @@ class EliteInstitutionalFlowBot {
     });
   }
 
-  async generateFlowReport(chatId, symbol) {
+  // Helper method to determine trading date
+  getTradingDate() {
+    const now = moment().tz(config.app.timezone);
+    const day = now.day(); // 0=Sun, 1=Mon, etc.
+    const hour = now.hour();
+    const minute = now.minute();
+    
+    // If weekend, return Friday's date
+    if (day === 0) { // Sunday
+      return now.subtract(2, 'days').format('YYYY-MM-DD');
+    } else if (day === 6) { // Saturday
+      return now.subtract(1, 'days').format('YYYY-MM-DD');
+    }
+    
+    // If before market open on weekday, return previous trading day
+    if (hour < 9 || (hour === 9 && minute < 30)) {
+      // If Monday before open, return Friday
+      if (day === 1) {
+        return now.subtract(3, 'days').format('YYYY-MM-DD');
+      }
+      return now.subtract(1, 'days').format('YYYY-MM-DD');
+    }
+    
+    // During or after market hours, return today
+    return now.format('YYYY-MM-DD');
+  }
+
+  // Helper method to check if market is open
+  isMarketOpen() {
+    const now = moment().tz(config.app.timezone);
+    const day = now.day();
+    const hour = now.hour();
+    const minute = now.minute();
+    
+    // Market closed on weekends
+    if (day === 0 || day === 6) return false;
+    
+    // Market hours: 9:30 AM - 4:00 PM ET
+    if (hour < 9 || hour > 16) return false;
+    if (hour === 9 && minute < 30) return false;
+    if (hour === 16 && minute > 0) return false;
+    
+    return true;
+  }
+
+  async generateFlowReport(chatId, symbol, specificDate = null) {
     try {
+      // Determine which date to analyze
+      const targetDate = specificDate || this.getTradingDate();
+      const isLive = !specificDate && this.isMarketOpen();
+      
       // Send initial message
       const processingMsg = await this.bot.sendMessage(chatId, 
-        `🔄 Fetching REAL institutional flow data for *${symbol}*...\n` +
+        `🔄 ${isLive ? 'Fetching LIVE' : 'Analyzing historical'} institutional flow for *${symbol}*\n` +
+        `📅 Date: ${targetDate} ${isLive ? '(Live Session)' : '(Historical)'}\n` +
         `📊 Sources: Tradier Production + Unusual Whales\n` +
-        `⏱️ Timeframe: TODAY ONLY | Same-day data`,
+        `⏱️ Timeframe: ${isLive ? 'CURRENT SESSION' : 'COMPLETE SESSION'} data`,
         { parse_mode: 'Markdown' }
       );
 
       // Track user session
       this.userSessions.set(chatId, {
         symbol,
+        date: targetDate,
         startTime: new Date(),
         requestCount: (this.userSessions.get(chatId)?.requestCount || 0) + 1
       });
 
-      // Fetch and analyze data
-      const flowData = await this.flowAnalyzer.analyzeSymbolFlow(symbol);
+      // Fetch and analyze data WITH DATE PARAMETER
+      const flowData = await this.flowAnalyzer.analyzeSymbolFlow(symbol, targetDate);
+      
+      // Add timestamp context to analysis data
+      flowData.analysisContext = {
+        isLive: isLive,
+        analysisDate: targetDate,
+        reportGenerated: new Date().toISOString(),
+        marketWasOpen: this.isMarketOpen(),
+        sessionType: isLive ? 'LIVE' : 'HISTORICAL'
+      };
       
       // Build report
       const report = await this.reportBuilder.buildDailyReport(flowData);
       
-      // Send report in chunks (Telegram has message length limits)
-      const chunks = this.splitReport(report);
-      
       // Delete processing message
       await this.bot.deleteMessage(chatId, processingMsg.message_id);
+      
+      // Send report in chunks (Telegram has message length limits)
+      const chunks = this.splitReport(report);
       
       // Send report chunks
       for (const chunk of chunks) {
@@ -230,7 +312,7 @@ class EliteInstitutionalFlowBot {
         await this.delay(100); // Small delay between chunks
       }
 
-      this.logger.info(`Report generated for ${symbol} (Chat: ${chatId})`);
+      this.logger.info(`Report generated for ${symbol} on ${targetDate} (Chat: ${chatId})`);
 
     } catch (error) {
       this.logger.error(`Error generating report for ${symbol}: ${error.message}`);
@@ -241,11 +323,17 @@ class EliteInstitutionalFlowBot {
         errorMessage += `Invalid symbol: *${symbol}*\n`;
         errorMessage += `Please check the symbol and try again.`;
       } else if (error.message.includes('data') || error.message.includes('fetch')) {
-        errorMessage += `Data fetch failed for *${symbol}*\n`;
-        errorMessage += `API may be temporarily unavailable.`;
+        const targetDate = specificDate || this.getTradingDate();
+        errorMessage += `Data fetch failed for *${symbol}* on ${targetDate}\n`;
+        errorMessage += `Possible reasons:\n`;
+        errorMessage += `• No institutional flow that day\n`;
+        errorMessage += `• API temporarily unavailable\n`;
+        errorMessage += `• Market holiday (no trading)\n`;
+        errorMessage += `Try a different date with /flow_hist ${symbol} YYYY-MM-DD`;
       } else if (error.message.includes('market closed')) {
-        errorMessage += `Market is closed or no data available for *${symbol}*\n`;
-        errorMessage += `Try again during market hours (9:30 AM - 4:00 PM ET).`;
+        const targetDate = this.getTradingDate();
+        errorMessage += `Market is closed. Showing historical analysis for ${targetDate}\n`;
+        errorMessage += `Use /flow_hist ${symbol} YYYY-MM-DD for specific dates`;
       } else {
         errorMessage += `System error: ${error.message}`;
       }
@@ -253,6 +341,48 @@ class EliteInstitutionalFlowBot {
       await this.bot.sendMessage(chatId, errorMessage, {
         parse_mode: 'Markdown'
       });
+    }
+  }
+
+  async generateHistoricalFlowReport(chatId, symbol, dateString) {
+    try {
+      // Validate date format
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(dateString)) {
+        await this.bot.sendMessage(chatId, 
+          `❌ Invalid date format. Use YYYY-MM-DD\nExample: /flow_hist SPY 2024-03-15`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      
+      const date = moment(dateString, 'YYYY-MM-DD');
+      if (!date.isValid()) {
+        await this.bot.sendMessage(chatId, 
+          `❌ Invalid date. Use YYYY-MM-DD format\nExample: /flow_hist SPY 2024-03-15`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      
+      // Don't allow future dates
+      const today = moment().tz(config.app.timezone);
+      if (date.isAfter(today, 'day')) {
+        await this.bot.sendMessage(chatId, 
+          `❌ Cannot analyze future dates. Maximum date: ${today.format('YYYY-MM-DD')}`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      
+      await this.generateFlowReport(chatId, symbol, dateString);
+      
+    } catch (error) {
+      this.logger.error(`Historical flow error: ${error.message}`);
+      await this.bot.sendMessage(chatId,
+        `❌ Historical analysis failed.\nError: ${error.message}\nUse: /flow_hist SYMBOL YYYY-MM-DD`,
+        { parse_mode: 'Markdown' }
+      );
     }
   }
 
@@ -276,16 +406,18 @@ class EliteInstitutionalFlowBot {
     const processingMsg = await this.bot.sendMessage(chatId,
       `🔄 Fetching multi-symbol institutional flow...\n` +
       `📊 Symbols: ${symbols.join(', ')}\n` +
+      `📅 Date: ${this.getTradingDate()}\n` +
       `⏱️ Processing ${symbols.length} symbols...`,
       { parse_mode: 'Markdown' }
     );
 
     try {
       const reports = [];
+      const targetDate = this.getTradingDate();
       
       for (const symbol of symbols) {
         try {
-          const flowData = await this.flowAnalyzer.analyzeSymbolFlow(symbol);
+          const flowData = await this.flowAnalyzer.analyzeSymbolFlow(symbol, targetDate);
           const summary = this.reportBuilder.buildSummaryReport(flowData);
           reports.push({ symbol, summary });
         } catch (error) {
@@ -302,12 +434,8 @@ class EliteInstitutionalFlowBot {
 
       // Send multi-report
       let multiReport = `🏛️ *MULTI-SYMBOL INSTITUTIONAL FLOW*\n\n`;
-      multiReport += `📅 ${new Date().toLocaleDateString('en-US', { timeZone: config.app.timezone })}\n`;
-      multiReport += `⏱️ Session: ${config.app.sessionStart} - ${new Date().toLocaleTimeString('en-US', { 
-        timeZone: config.app.timezone,
-        hour: '2-digit',
-        minute: '2-digit'
-      })} ET\n\n`;
+      multiReport += `📅 ${this.getTradingDate()} | ${moment().tz(config.app.timezone).format('HH:mm')} ET\n`;
+      multiReport += `⏱️ Analysis Time: ${moment().format('HH:mm:ss')}\n\n`;
       
       for (const report of reports) {
         multiReport += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
