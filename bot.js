@@ -12,6 +12,7 @@ class EliteInstitutionalFlowBot {
     this.flowAnalyzer = new FlowAnalyzer();
     this.logger = new Logger('bot');
     this.userSessions = new Map();
+    this.rateLimits = new Map();
     
     this.initializeBot();
     this.setupCommands();
@@ -126,6 +127,14 @@ class EliteInstitutionalFlowBot {
 /status - Check bot status
 /help - Show this help
 
+*NEW FEATURES:*
+• Advanced gamma exposure heatmaps
+• Flow momentum oscillator
+• Institutional sentiment index
+• Flow anomaly detection
+• Volatility regime analysis
+• Trade structuring suggestions
+
 *Example:* \`/flow SPY\` or \`/flow AAPL\`
 *Historical:* \`/flow_hist SPY 2024-03-15\`
 
@@ -152,8 +161,17 @@ class EliteInstitutionalFlowBot {
 7. 🏆 Top Institutional Prints
 8. 🧱 Delta Concentration Points
 9. 🎯 Key Institutional Levels
-10. 📈 Daily Flow Summary
-11. 🎯 Institutional Thesis
+10. 📊 Dealer Gamma Exposure Heatmap
+11. 📈 Flow Momentum Oscillator
+12. 🎭 Institutional Sentiment Index
+13. 🚨 Flow Anomaly Detection
+14. 🌊 Volatility Regime Analysis
+15. ⚡ Order Flow Impact Score
+16. 🔄 Institutional Positioning Cycles
+17. 🎯 Multi-timeframe Confluence Matrix
+18. 📈 Daily Flow Summary
+19. 🎯 Institutional Thesis
+20. 🎯 Institutional Trade Structuring
 
 *TIER DEFINITIONS:*
 🚨 TIER-1: 0-3 DTE ONLY (Urgent flow)
@@ -201,6 +219,13 @@ class EliteInstitutionalFlowBot {
 
 *Active Sessions:* ${this.userSessions.size}
 *Memory Usage:* ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB
+
+*Advanced Features Active:*
+• Gamma Heatmaps: ✅
+• Flow Momentum: ✅
+• Sentiment Index: ✅
+• Anomaly Detection: ✅
+• Trade Structuring: ✅
 
 *Data Availability:*
 • Real-time flow: ${isMarketOpen ? '✅ Active' : '❌ Market Closed'}
@@ -259,8 +284,39 @@ class EliteInstitutionalFlowBot {
     return true;
   }
 
+  // Rate limiting helper method
+  checkRateLimit(chatId) {
+    const now = Date.now();
+    const userLimit = this.rateLimits.get(chatId) || { count: 0, lastRequest: 0 };
+    
+    // Reset if more than 1 minute passed
+    if (now - userLimit.lastRequest > 60000) {
+      userLimit.count = 0;
+    }
+    
+    // Check if user exceeded limit (e.g., 5 requests per minute)
+    if (userLimit.count >= 5) {
+      return false;
+    }
+    
+    userLimit.count++;
+    userLimit.lastRequest = now;
+    this.rateLimits.set(chatId, userLimit);
+    return true;
+  }
+
   async generateFlowReport(chatId, symbol, specificDate = null) {
     try {
+      // Rate limiting check
+      if (!this.checkRateLimit(chatId)) {
+        await this.bot.sendMessage(chatId,
+          `⏸️ Rate limit exceeded. Please wait 1 minute between requests.\n` +
+          `You can still use historical analysis: /flow_hist ${symbol} YYYY-MM-DD`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      
       // Determine which date to analyze
       const targetDate = specificDate || this.getTradingDate();
       const isLive = !specificDate && this.isMarketOpen();
@@ -295,7 +351,20 @@ class EliteInstitutionalFlowBot {
       };
       
       // Build report
-      const report = await this.reportBuilder.buildDailyReport(flowData);
+      let report;
+      try {
+        report = await this.reportBuilder.buildDailyReport(flowData);
+      } catch (reportError) {
+        this.logger.error(`Report building error: ${reportError.message}`);
+        await this.bot.deleteMessage(chatId, processingMsg.message_id);
+        await this.bot.sendMessage(chatId, 
+          `❌ Report generation failed for technical reasons.\n` +
+          `Error: ${reportError.message}\n` +
+          `Please try again or contact support.`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
       
       // Delete processing message
       await this.bot.deleteMessage(chatId, processingMsg.message_id);
@@ -398,6 +467,16 @@ class EliteInstitutionalFlowBot {
     if (symbols.length > config.app.maxSymbols) {
       await this.bot.sendMessage(chatId, 
         `❌ Maximum ${config.app.maxSymbols} symbols allowed.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Rate limiting check for multi-symbol
+    if (!this.checkRateLimit(chatId)) {
+      await this.bot.sendMessage(chatId,
+        `⏸️ Rate limit exceeded. Please wait 1 minute between requests.\n` +
+        `Multi-symbol analysis requires additional API calls.`,
         { parse_mode: 'Markdown' }
       );
       return;
