@@ -125,7 +125,6 @@ class ReportBuilder {
     report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
     report += `🎯 *Takeaway:* ${t2.takeaway}\n\n`;
 
-   
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TIER HIERARCHY DECISION ENGINE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -160,7 +159,79 @@ if (tierAnalysis.hierarchy) {
   
   report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRADING STRATEGY GUIDANCE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if (tierAnalysis.decision && tierAnalysis.decision.direction !== 'NEUTRAL') {
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  report += `📊 *TRADING STRATEGY GUIDANCE*\n\n`;
+  
+  const decision = tierAnalysis.decision;
+  const t1 = tierAnalysis.tier1;
+  const t2 = tierAnalysis.tier2;
+  const hierarchy = tierAnalysis.hierarchy;
+  
+  // Scalper Guidance
+  report += `🔥 *SCALPER (0-3 DAYS):*\n`;
+  if (t1.hasClearSignal && hierarchy.followTier1) {
+    const direction = t1.directionalSignal.toLowerCase();
+    report += `• SIGNAL: 🚨 STRONG ${t1.directionalSignal} (Tier-1 dominant)\n`;
+    report += `• ENTRY: Current levels ($${quote.price.toFixed(2)})\n`;
     
+    if (direction === 'bullish') {
+      const resistance = institutionalLevels.resistance[0]?.strike || (quote.price * 1.02).toFixed(2);
+      report += `• TARGET: $${resistance} (ATM resistance)\n`;
+      report += `• STOP: $${institutionalLevels.support[0]?.strike || (quote.price * 0.98).toFixed(2)} (below support)\n`;
+    } else {
+      const support = institutionalLevels.support[0]?.strike || (quote.price * 0.98).toFixed(2);
+      report += `• TARGET: $${support} (ATM support)\n`;
+      report += `• STOP: $${institutionalLevels.resistance[0]?.strike || (quote.price * 1.02).toFixed(2)} (above resistance)\n`;
+    }
+    
+    report += `• HOLD: 1-2 days (gamma play)\n`;
+    const confidence = Math.min(decision.confidence, 100);
+    const size = confidence >= 80 ? '100%' : confidence >= 70 ? '75%' : '50%';
+    report += `• SIZE: ${size} normal (${confidence >= 80 ? 'high' : 'moderate'} conviction)\n`;
+  } else {
+    report += `• SIGNAL: ❌ NO CLEAR TIER-1 SIGNAL\n`;
+    report += `• ACTION: STAND ASIDE\n`;
+  }
+  report += `\n`;
+  
+  // Swing Trader Guidance
+  report += `🌊 *SWING TRADER (3-14 DAYS):*\n`;
+  if (t2.directionalSignal !== 'NEUTRAL') {
+    const direction = t2.directionalSignal.toLowerCase();
+    const alignment = hierarchy.conflictDetected ? 'CONFLICT' : 
+                     t1.directionalSignal === t2.directionalSignal ? 'CONFIRMED' : 'NEUTRAL';
+    
+    report += `• SIGNAL: ${alignment === 'CONFIRMED' ? '📈 STRONG' : '⚠️ MODERATE'} ${t2.directionalSignal} (Tier-2 ${alignment})\n`;
+    
+    if (direction === 'bullish') {
+      const entry = institutionalLevels.support[0]?.strike || (quote.price * 0.99).toFixed(2);
+      const target = institutionalLevels.resistance[2]?.strike || (quote.price * 1.05).toFixed(2);
+      report += `• ENTRY: $${entry} (dip to support)\n`;
+      report += `• TARGET: $${target} (next resistance zone)\n`;
+      report += `• STOP: $${(parseFloat(entry) * 0.97).toFixed(2)} (structural break)\n`;
+    } else {
+      const entry = institutionalLevels.resistance[0]?.strike || (quote.price * 1.01).toFixed(2);
+      const target = institutionalLevels.support[2]?.strike || (quote.price * 0.95).toFixed(2);
+      report += `• ENTRY: $${entry} (bounce to resistance)\n`;
+      report += `• TARGET: $${target} (next support zone)\n`;
+      report += `• STOP: $${(parseFloat(entry) * 1.03).toFixed(2)} (structural break)\n`;
+    }
+    
+    report += `• HOLD: 5-10 days (theta positive)\n`;
+    const size = alignment === 'CONFIRMED' ? '100%' : alignment === 'CONFLICT' ? '50%' : '75%';
+    report += `• SIZE: ${size} normal (${alignment.toLowerCase()} alignment)\n`;
+  } else {
+    report += `• SIGNAL: ❌ NO CLEAR TIER-2 CONVICTION\n`;
+    report += `• ACTION: STAND ASIDE\n`;
+  }
+  report += `\n`;
+} 
+   
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // TIER COMPOSITION BREAKDOWN
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
