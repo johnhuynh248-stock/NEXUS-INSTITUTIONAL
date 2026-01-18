@@ -124,7 +124,84 @@ class ReportBuilder {
     report += `• Real Delta C:P = ${t2.ratio.realDelta}\n\n`;
     report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
     report += `🎯 *Takeaway:* ${t2.takeaway}\n\n`;
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    // TIER COMPOSITION BREAKDOWN
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if (analysisData.tierComposition) {
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  report += `📊 *TIER-1 COMPOSITION BREAKDOWN*\n\n`;
+  
+  const comp = analysisData.tierComposition;
+  report += `*Total Tier-1 Prints:* ${comp.totalPrints}\n\n`;
+  
+  if (comp.byType && Object.keys(comp.byType).length > 0) {
+    report += `*By Condition Type:*\n`;
+    
+    Object.entries(comp.byType).forEach(([type, data]) => {
+      if (data.prints > 0) {
+        report += `• *${type}:* ${data.prints} prints | $${this.formatCurrency(data.notional)} (${data.percent}%)\n`;
+      }
+    });
+    report += '\n';
+  }
+  
+  if (comp.stockOptionCombos && comp.stockOptionCombos.length > 0) {
+    report += `*Stock-Option Combos:*\n`;
+    comp.stockOptionCombos.forEach(combo => {
+      report += `— Stock at $${combo.stockPrice.toFixed(2)} + ${combo.strike}${combo.optionType} = ${combo.intent}\n`;
+    });
+    report += '\n';
+  }
+  
+  if (comp.eliteInstitutional) {
+    const elite = comp.eliteInstitutional;
+    report += `*Elite Institutional:* ${elite.prints} prints | $${this.formatCurrency(elite.notional)} (${elite.percent}%)\n`;
+    if (elite.range) {
+      report += `  Range: $${elite.range.min}-$${elite.range.max}\n`;
+    }
+    if (elite.callSpreads) {
+      report += `  Call Spreads: bullish to $${elite.callSpreads.target} (${elite.callSpreads.count} detected, upside capped)\n`;
+    }
+  }
+  report += '\n';
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TIER-2 LARGE BLOCK FLOW
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `🐘 *TIER-2 LARGE BLOCK FLOW (Patient | 3-14 DTE)*\n\n`;
+
+const t2 = tierAnalysis.tier2;
+report += `*CALLS:*\n`;
+report += `• Notional: $${this.formatCurrency(t2.calls.notional)} (${t2.calls.prints} prints)\n`;
+report += `• Real Delta: $${this.formatCurrency(t2.calls.realDelta)} exposure\n`;
+report += `• Avg DTE: ${t2.calls.avgDte} days\n`;
+report += `• Avg Size: ${this.calculateAvgContracts(t2.calls)} contracts\n\n`;
+
+report += `*PUTS:*\n`;
+report += `• Notional: $${this.formatCurrency(t2.puts.notional)} (${t2.puts.prints} prints)\n`;
+report += `• Real Delta: $${this.formatCurrency(t2.puts.realDelta)} exposure\n`;
+report += `• Avg DTE: ${t2.puts.avgDte} days\n`;
+report += `• Avg Size: ${this.calculateAvgContracts(t2.puts)} contracts\n\n`;
+
+report += `📊 *TIER-2 RATIO:*\n`;
+const t2NotionalRatio = t2.puts.notional > 0 ? (t2.calls.notional / t2.puts.notional).toFixed(2) : '∞';
+const t2DeltaRatio = Math.abs(t2.puts.realDelta) > 0 ? (t2.calls.realDelta / Math.abs(t2.puts.realDelta)).toFixed(2) : '∞';
+
+report += `• Notional C:P = ${t2NotionalRatio} ${t2.ratio.notionalBullish ? '🐂' : '🐻'}\n`;
+report += `• Real Delta C:P = ${t2DeltaRatio} ${t2.ratio.realDeltaBullish ? '🐂' : '🐻'}\n\n`;
+
+report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
+
+// Calculate call-heavy percentage
+const totalT2Flow = t2.calls.notional + Math.abs(t2.puts.notional);
+const callPercent = totalT2Flow > 0 ? (t2.calls.notional / totalT2Flow * 100).toFixed(1) : '0.0';
+
+report += `→ Patient institutional flow is ${callPercent}% CALL-heavy\n`;
+report += `→ $${this.formatCurrency(t2.calls.notional)} in calls vs $${this.formatCurrency(t2.puts.notional)} in puts (daily)\n\n`;
+   
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // ATM FLOW
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
