@@ -49,7 +49,7 @@ class FlowAnalyzer {
     // Process flow data with proper date context
     const processedFlow = this.processFlowData(flowData, quote.price || 100, targetDate);
     const hourlyBreakdown = this.calculateHourlyBreakdown(processedFlow, targetDate);
-    const tierAnalysis = this.tierAnalyzer.analyzeTiers(processedFlow);
+    const tierAnalysis = this.tierAnalyzer.analyzeTiers(processedFlow, quote.price);
     const tierComposition = this.analyzeTierComposition(processedFlow);
     const atmFlow = this.calculateATMFlow(processedFlow, quote.price || 100);
     const complexAnalysis = this.analyzeComplexTrades(complexTrades);
