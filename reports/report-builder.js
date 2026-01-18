@@ -1,11 +1,13 @@
 const moment = require('moment-timezone');
 const config = require('../config');
 const Logger = require('../utils/logger');
+const AdvancedAnalysis = require('./advanced-analysis');
 
 class ReportBuilder {
   constructor() {
     this.timezone = config.app.timezone;
     this.logger = new Logger('report-builder');
+    this.advancedAnalysis = new AdvancedAnalysis();
   }
 
   buildDailyReport(analysisData) {
