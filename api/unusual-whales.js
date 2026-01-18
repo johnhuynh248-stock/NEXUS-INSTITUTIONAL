@@ -16,132 +16,181 @@ class UnusualWhalesAPI {
         min_notional: config.rules.minNotional
       };
 
+      // ✅ CRITICAL: Add date parameter if provided
       if (date) {
         params.date = date;
+        this.logger.info(`Fetching historical institutional flow for ${symbol} on ${date}`);
+      } else {
+        this.logger.info(`Fetching current institutional flow for ${symbol}`);
       }
 
       const response = await axios.get(`${this.baseUrl}/api/flow/institutional`, {
         headers: this.headers,
-        params: params
+        params: params,
+        timeout: 30000 // 30 second timeout
       });
 
-      return this.filterAndValidateFlow(response.data);
+      // ✅ FIXED: Pass the target date to filter function
+      return this.filterAndValidateFlow(response.data, date);
       
     } catch (error) {
-      this.logger.error(`Unusual Whales flow error for ${symbol}: ${error.message}`);
-      throw error;
+      this.logger.error(`Unusual Whales flow error for ${symbol}${date ? ' on ' + date : ''}: ${error.message}`);
+      // Return empty array instead of throwing to allow graceful degradation
+      return [];
     }
   }
 
-  async getBlocks(symbol, minSize = 100) {
+  async getBlocks(symbol, minSize = 100, date = null) {
     try {
+      const params = {
+        ticker: symbol,
+        min_contracts: minSize
+      };
+
+      // Add date parameter if provided
+      if (date) {
+        params.date = date;
+      }
+
       const response = await axios.get(`${this.baseUrl}/api/blocks`, {
         headers: this.headers,
-        params: {
-          ticker: symbol,
-          min_contracts: minSize
-        }
+        params: params
       });
 
       return response.data.blocks || [];
       
     } catch (error) {
       this.logger.error(`Unusual Whales blocks error for ${symbol}: ${error.message}`);
-      throw error;
+      return [];
     }
   }
 
-  async getRealDelta(symbol, strike, expiration, optionType) {
+  async getRealDelta(symbol, strike, expiration, optionType, date = null) {
     try {
+      const params = {
+        ticker: symbol,
+        strike: strike,
+        expiration: expiration,
+        type: optionType
+      };
+
+      // Add date parameter if provided
+      if (date) {
+        params.date = date;
+      }
+
       const response = await axios.get(`${this.baseUrl}/api/real-delta`, {
         headers: this.headers,
-        params: {
-          ticker: symbol,
-          strike: strike,
-          expiration: expiration,
-          type: optionType
-        }
+        params: params
       });
 
       return response.data.delta || 0;
       
     } catch (error) {
       this.logger.error(`Unusual Whales real delta error: ${error.message}`);
-      throw error;
+      return 0;
     }
   }
 
-  async getComplexTrades(symbol) {
+  async getComplexTrades(symbol, date = null) {
     try {
+      const params = {
+        ticker: symbol,
+        min_notional: config.rules.minNotional
+      };
+
+      // Add date parameter if provided
+      if (date) {
+        params.date = date;
+      }
+
       const response = await axios.get(`${this.baseUrl}/api/complex-trades`, {
         headers: this.headers,
-        params: {
-          ticker: symbol,
-          min_notional: config.rules.minNotional
-        }
+        params: params
       });
 
       return response.data.trades || [];
       
     } catch (error) {
       this.logger.error(`Unusual Whales complex trades error for ${symbol}: ${error.message}`);
-      throw error;
+      return [];
     }
   }
 
-  async getDeltaConcentration(symbol) {
+  async getDeltaConcentration(symbol, date = null) {
     try {
+      const params = {
+        ticker: symbol,
+        // Use provided date or default to today
+        date: date || new Date().toISOString().split('T')[0]
+      };
+
       const response = await axios.get(`${this.baseUrl}/api/delta-concentration`, {
         headers: this.headers,
-        params: {
-          ticker: symbol,
-          date: new Date().toISOString().split('T')[0]
-        }
+        params: params
       });
 
       return response.data.concentration || [];
       
     } catch (error) {
       this.logger.error(`Unusual Whales delta concentration error for ${symbol}: ${error.message}`);
-      throw error;
+      return [];
     }
   }
 
-  filterAndValidateFlow(data) {
+  // ✅ FIXED: Now accepts targetDate parameter
+  filterAndValidateFlow(data, targetDate = null) {
     if (!data || !data.flow) return [];
     
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
+    // Use targetDate if provided, otherwise use today
+    const referenceDate = targetDate || new Date().toISOString().split('T')[0];
     
-    // Filter for same-day data only
+    this.logger.debug(`Filtering flow data for date: ${referenceDate}`);
+    
+    // Filter for target date only
     const filtered = data.flow.filter(flow => {
-      const flowDate = new Date(flow.timestamp).toISOString().split('T')[0];
+      if (!flow.timestamp) return false;
       
-      // STRICT RULE: Same-day only
-      if (flowDate !== today) return false;
-      
-      // Institutional minimum
-      if (flow.notional < config.rules.minNotional) return false;
-      
-      // Valid option type
-      if (!['CALL', 'PUT'].includes(flow.option_type)) return false;
-      
-      // Valid strike and expiration
-      if (!flow.strike || !flow.expiration) return false;
-      
-      return true;
+      try {
+        const flowDate = new Date(flow.timestamp).toISOString().split('T')[0];
+        const matchesDate = flowDate === referenceDate;
+        
+        // Additional validation
+        const isValid = flow.option_type && 
+                       flow.strike && 
+                       flow.notional && 
+                       flow.notional >= config.rules.minNotional;
+        
+        return matchesDate && isValid;
+        
+      } catch (error) {
+        this.logger.warn(`Error parsing flow timestamp: ${error.message}`);
+        return false;
+      }
     });
+    
+    this.logger.info(`Filtered ${filtered.length} institutional flows for ${referenceDate}`);
     
     // Calculate DTE for each flow
     return filtered.map(flow => {
-      const expiration = new Date(flow.expiration);
-      const dte = Math.ceil((expiration - now) / (1000 * 60 * 60 * 24));
-      
-      return {
-        ...flow,
-        dte: Math.max(0, dte),
-        timestamp: new Date(flow.timestamp)
-      };
+      try {
+        const expiration = flow.expiration ? new Date(flow.expiration) : null;
+        const flowTimestamp = new Date(flow.timestamp);
+        const dte = expiration ? Math.ceil((expiration - flowTimestamp) / (1000 * 60 * 60 * 24)) : 0;
+        
+        return {
+          ...flow,
+          dte: Math.max(0, dte),
+          timestamp: flowTimestamp
+        };
+      } catch (error) {
+        this.logger.warn(`Error processing flow: ${error.message}`);
+        return {
+          ...flow,
+          dte: 0,
+          timestamp: new Date(flow.timestamp || referenceDate)
+        };
+      }
     });
   }
 
