@@ -125,6 +125,42 @@ class ReportBuilder {
     report += `➡️ *Net Exposure:* $${this.formatCurrency(t2.netExposure)}\n`;
     report += `🎯 *Takeaway:* ${t2.takeaway}\n\n`;
 
+   
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TIER HIERARCHY DECISION ENGINE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if (tierAnalysis.hierarchy) {
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  report += `🎯 *TIER HIERARCHY DECISION ENGINE*\n\n`;
+  
+  const hierarchy = tierAnalysis.hierarchy;
+  const decision = tierAnalysis.decision;
+  
+  report += `*PRIMARY DIRECTION:* ${hierarchy.primaryDirection}\n`;
+  report += `*SECONDARY CONTEXT:* ${hierarchy.secondaryContext}\n\n`;
+  
+  if (hierarchy.followConditions && hierarchy.followConditions.length > 0) {
+    report += `*FOLLOW TIER-1 CONDITIONS MET:*\n`;
+    hierarchy.followConditions.forEach(condition => {
+      report += `✅ ${condition}\n`;
+    });
+    report += '\n';
+  }
+  
+  if (hierarchy.conflictDetected) {
+    report += `⚠️ *CONFLICT DETECTED:*\n`;
+    report += `${hierarchy.interpretation}\n\n`;
+  }
+  
+  report += `*FINAL DECISION:*\n`;
+  report += `• Direction: ${decision.direction}\n`;
+  report += `• Urgency: ${decision.urgency}\n`;
+  report += `• Confidence: ${decision.confidence}/100\n`;
+  report += `• Guidance: ${decision.guidance}\n\n`;
+  
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+}
+    
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // TIER COMPOSITION BREAKDOWN
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
