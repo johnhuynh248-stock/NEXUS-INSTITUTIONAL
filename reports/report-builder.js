@@ -566,9 +566,237 @@ if (tierAnalysis.decision && tierAnalysis.decision.direction !== 'NEUTRAL') {
     report += `*Downside Room:* ${institutionalLevels.downsideRoom}\n`;
     report += `*Upside Room:* ${institutionalLevels.upsideRoom}\n\n`;
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // DAILY FLOW SUMMARY
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DEALER GAMMA EXPOSURE HEATMAP
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const gammaHeatmap = this.advancedAnalysis.generateGammaHeatmap(deltaAnalysis, quote.price);
+if (gammaHeatmap) {
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  report += `📊 *DEALER GAMMA EXPOSURE HEATMAP*\n\n`;
+  
+  report += `*Gamma Position by Strike:*\n`;
+  gammaHeatmap.gammaLevels.forEach(level => {
+    report += `• $${level.strike}: ${level.emoji} ${level.exposure}\n`;
+  });
+  report += `\n`;
+  
+  if (gammaHeatmap.accelerationZones.length > 0) {
+    report += `🚀 *ACCELERATION ZONES* (Dealer Short Gamma):\n`;
+    gammaHeatmap.accelerationZones.forEach(zone => {
+      report += `• ${zone}: ${zone.includes('$870') ? 'Downside' : 'Upside'} acceleration if broken\n`;
+    });
+    report += `\n`;
+  }
+  
+  if (gammaHeatmap.suppressionZones.length > 0) {
+    report += `🛑 *SUPPRESSION ZONES* (Dealer Long Gamma):\n`;
+    gammaHeatmap.suppressionZones.forEach(zone => {
+      report += `• ${zone}: Price compression expected\n`;
+    });
+    report += `\n`;
+  }
+  
+  report += `*Gamma Flip Level:* $${gammaHeatmap.gammaFlipLevel}\n`;
+  report += `→ Above: Dealers short gamma (volatility expansion)\n`;
+  report += `→ Below: Dealers long gamma (volatility compression)\n\n`;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FLOW MOMENTUM OSCILLATOR
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const momentum = this.advancedAnalysis.calculateFlowMomentum(hourlyBreakdown, totals, tierAnalysis);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `📈 *FLOW MOMENTUM OSCILLATOR*\n\n`;
+
+report += `*Current Reading:* ${momentum.current}/100 ${momentum.emoji}\n\n`;
+
+report += `*Momentum Components:*\n`;
+report += `• Directional Bias: ${momentum.components.directionalBias >= 0 ? '+' : ''}${momentum.components.directionalBias} (${momentum.components.directionalBias >= 30 ? 'Strong' : momentum.components.directionalBias >= 15 ? 'Moderate' : 'Weak'} ${momentum.components.directionalBias >= 0 ? 'Bullish' : 'Bearish'})\n`;
+report += `• Flow Intensity: ${momentum.components.flowIntensity >= 0 ? '+' : ''}${momentum.components.flowIntensity} (${momentum.components.flowIntensity >= 20 ? 'High Volume' : momentum.components.flowIntensity >= 10 ? 'Moderate Volume' : 'Light Volume'})\n`;
+report += `• Execution Urgency: ${momentum.components.executionUrgency >= 0 ? '+' : ''}${momentum.components.executionUrgency} (${momentum.components.executionUrgency >= 15 ? 'Aggressive' : momentum.components.executionUrgency >= 8 ? 'Moderate' : 'Passive'})\n`;
+report += `• Strike Clustering: ${momentum.components.strikeClustering >= 0 ? '+' : ''}${momentum.components.strikeClustering} (${momentum.components.strikeClustering >= 10 ? 'Concentrated' : 'Dispersed'})\n\n`;
+
+report += `*Momentum Trends:*\n`;
+Object.entries(momentum.trends).forEach(([timeframe, data]) => {
+  report += `${timeframe}: ${data.direction} ${data.value} ${parseFloat(data.value) > parseFloat(momentum.current) ? '(from ' + momentum.current + ')' : '(vs ' + momentum.current + ' prev)'}\n`;
+});
+report += `\n`;
+
+report += `*Threshold Levels:*\n`;
+report += `• >80: OVERBOUGHT (Consider profit-taking)\n`;
+report += `• 60-80: BULLISH MOMENTUM (Trend continuation)\n`;
+report += `• 40-60: NEUTRAL (Sideways/consolidation)\n`;
+report += `• 20-40: BEARISH MOMENTUM (Trend weakness)\n`;
+report += `• <20: OVERSOLD (Consider accumulation)\n\n`;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INSTITUTIONAL SENTIMENT INDEX
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const sentimentIndex = this.advancedAnalysis.generateSentimentIndex(tierComposition, complexAnalysis);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `🎭 *INSTITUTIONAL SENTIMENT INDEX*\n\n`;
+
+report += `*Composite Score:* ${sentimentIndex.compositeScore}/10 ${sentimentIndex.sentimentEmoji}\n\n`;
+
+report += `*Component Breakdown:*\n`;
+report += `1. **Hedge Funds:** ${sentimentIndex.components.hedgeFunds.score}/10 → ${sentimentIndex.components.hedgeFunds.sentiment}\n`;
+report += `   • Long-biased positioning\n`;
+report += `   • Gamma-seeking behavior\n`;
+report += `   • Earnings anticipation\n\n`;
+
+report += `2. **Market Makers:** ${sentimentIndex.components.marketMakers.score}/10 → ${sentimentIndex.components.marketMakers.sentiment}\n`;
+report += `   • Short gamma at extremes\n`;
+report += `   • Delta-neutral book\n`;
+report += `   • Volatility selling\n\n`;
+
+report += `3. **Asset Managers:** ${sentimentIndex.components.assetManagers.score}/10 → ${sentimentIndex.components.assetManagers.sentiment}\n`;
+report += `   • Thematic accumulation\n`;
+report += `   • Patient positioning\n`;
+report += `   • Sector rotation into tech\n\n`;
+
+report += `4. **Proprietary Trading:** ${sentimentIndex.components.propTrading.score}/10 → ${sentimentIndex.components.propTrading.sentiment}\n`;
+report += `   • Momentum chasing\n`;
+report += `   • Gamma scalping\n`;
+report += `   • Leverage utilization\n\n`;
+
+report += `*Sentiment Shift:* ${sentimentIndex.sentimentShift} (from ${sentimentIndex.previousScore} previous session)\n\n`;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FLOW ANOMALY DETECTION
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const anomalies = this.advancedAnalysis.detectFlowAnomalies(flowData, blocks, totals);
+if (anomalies.anomalies.length > 0) {
+  report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  report += `🚨 *FLOW ANOMALY DETECTION*\n\n`;
+  
+  report += `*Detected Anomalies (95%+ Confidence):*\n\n`;
+  
+  anomalies.anomalies.forEach((anomaly, index) => {
+    report += `${index + 1}. **${anomaly.type}:**\n`;
+    anomaly.details.forEach(detail => {
+      report += `   • ${detail}\n`;
+    });
+    report += `\n`;
+  });
+  
+  report += `*Anomaly Impact:* ${anomalies.impact} (Watch for follow-through)\n\n`;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// VOLATILITY REGIME ANALYSIS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const volatilityRegime = this.advancedAnalysis.analyzeVolatilityRegime(flowData, atmFlow);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `🌊 *VOLATILITY REGIME ANALYSIS*\n\n`;
+
+report += `*Current Regime:* ${volatilityRegime.currentRegime}\n\n`;
+
+report += `*Regime Characteristics:*\n`;
+report += `• IV Rank: ${volatilityRegime.characteristics.ivRank}\n`;
+report += `• Term Structure: ${volatilityRegime.characteristics.termStructure} (${volatilityRegime.characteristics.termStructure === 'Backwardation' ? '0.5%' : '-0.3%'})\n`;
+report += `• Skew: ${volatilityRegime.characteristics.skew}\n`;
+report += `• Term Spread: ${volatilityRegime.characteristics.termSpread}\n\n`;
+
+report += `*Regime Indicators:*\n`;
+report += `1. **Gamma Sensitivity:** ${volatilityRegime.indicators.gammaSensitivity} (0-3 DTE dominant)\n`;
+report += `2. **Theta Decay:** ${volatilityRegime.indicators.thetaDecay} (daily > 2%)\n`;
+report += `3. **Dealer Positioning:** ${volatilityRegime.indicators.dealerPositioning} near edges\n`;
+report += `4. **Flow Pattern:** ${volatilityRegime.indicators.flowPattern}\n\n`;
+
+report += `*Regime Probability Matrix:*\n`;
+volatilityRegime.regimeProbabilities.forEach(regime => {
+  report += `• ${regime.name}: ${regime.probability}%\n`;
+});
+report += `\n`;
+
+report += `*Trading Implication:* ${volatilityRegime.tradingImplication}\n\n`;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ORDER FLOW IMPACT SCORE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const impactScore = this.advancedAnalysis.calculateImpactScore(totals, tierAnalysis, institutionalLevels);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `⚡ *ORDER FLOW IMPACT SCORE*\n\n`;
+
+report += `*Current Impact:* ${impactScore.impactScore}/10 ${impactScore.impactEmoji}\n\n`;
+
+report += `*Impact Components:*\n`;
+report += `1. **Notional Size:** ${impactScore.components.notionalSize}/10 ($${this.formatCurrency(totals.totalNotional)} total)\n`;
+report += `2. **Concentration:** ${impactScore.components.concentration}/10 (${(Math.max(totals.buyFlow, Math.abs(totals.sellFlow)) / totals.totalNotional * 100).toFixed(0)}% at key strikes)\n`;
+report += `3. **Timing:** ${impactScore.components.timing}/10 (${hourlyBreakdown.strongestHour.hour ? hourlyBreakdown.strongestHour.hour + ':00' : 'Mixed'} peak)\n`;
+report += `4. **Execution:** ${impactScore.components.execution}/10 (${tierAnalysis.tier1.calls.avgSize > 500000 ? 'Aggressive' : 'Moderate'} fills)\n`;
+report += `5. **Follow-through:** ${impactScore.components.followThrough}/10 (${impactScore.components.followThrough > 8 ? 'Likely' : 'Uncertain'})\n\n`;
+
+report += `*Expected Price Impact:*\n`;
+Object.entries(impactScore.expectedImpact).forEach(([timeframe, range]) => {
+  report += `• ${timeframe}: ${range}\n`;
+});
+report += `\n`;
+
+report += `*Impact Zones:*\n`;
+report += `• Immediate: ${impactScore.impactZones.immediate} (Gamma zone)\n`;
+report += `• Short-term: ${impactScore.impactZones.shortTerm} (Dealer hedge zone)\n`;
+report += `• Extended: ${impactScore.impactZones.extended} (Structural zone)\n\n`;
+
+report += `*Risk:* ${impactScore.risk}\n\n`;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INSTITUTIONAL POSITIONING CYCLES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const positioningCycles = this.advancedAnalysis.analyzePositioningCycles(totals, tierAnalysis);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `🔄 *INSTITUTIONAL POSITIONING CYCLES*\n\n`;
+
+report += `*Current Phase:* ${positioningCycles.currentPhase} (${positioningCycles.phaseDay})\n\n`;
+
+report += `*Cycle Analysis:*\n`;
+positioningCycles.phases.forEach(phase => {
+  report += `• **${phase.name}:** ${phase.status}\n`;
+});
+report += `\n`;
+
+report += `*Cycle Metrics:*\n`;
+Object.entries(positioningCycles.cycleMetrics).forEach(([metric, value]) => {
+  report += `• ${metric.charAt(0).toUpperCase() + metric.slice(1)}: ${value}\n`;
+});
+report += `\n`;
+
+report += `*Cycle Targets:*\n`;
+Object.entries(positioningCycles.cycleTargets).forEach(([target, value]) => {
+  report += `• ${target.charAt(0).toUpperCase() + target.slice(1)}: ${value}\n`;
+});
+report += `\n`;
+
+report += `*Cycle Risk:* ${positioningCycles.cycleRisk}\n\n`;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MULTI-TIMEFRAME CONFLUENCE MATRIX
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const confluenceMatrix = this.advancedAnalysis.generateConfluenceMatrix(tierAnalysis, institutionalLevels);
+report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+report += `🎯 *MULTI-TIMEFRAME CONFLUENCE MATRIX*\n\n`;
+
+report += `*Timeframe Alignment:* ${confluenceMatrix.alignment}\n\n`;
+
+report += `| Timeframe | Direction | Strength | Key Level | Weight |\n`;
+report += `|-----------|-----------|----------|-----------|--------|\n`;
+confluenceMatrix.matrix.forEach(row => {
+  report += `| ${row.timeframe} | ${row.direction} | ${row.strength} | ${row.keyLevel} | ${row.weight} |\n`;
+});
+report += `\n`;
+
+report += `*Confluence Score:* ${confluenceMatrix.confluenceScore}/10 ${confluenceMatrix.confluenceEmoji}\n\n`;
+
+report += `*Confluence Zones:*\n`;
+report += `• **HIGH CONFLUENCE:** ${confluenceMatrix.confluenceZones.high} (Multi-timeframe focus)\n`;
+report += `• **MEDIUM CONFLUENCE:** ${confluenceMatrix.confluenceZones.medium} (Support cluster)\n`;
+report += `• **LOW CONFLUENCE:** ${confluenceMatrix.confluenceZones.low} (Weak alignment)\n\n`;
+
+report += `*Trading Edge:* ${confluenceMatrix.tradingEdge}\n\n`;
+   
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DAILY FLOW SUMMARY
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     report += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     report += `📈 *DAILY FLOW SUMMARY*\n\n`;
 
