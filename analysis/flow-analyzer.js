@@ -1,5 +1,5 @@
 const TradierAPI = require('../api/tradier');
-const UnusualWhalesAPI = require('../api/unusual-whales');
+const UnusualWhalesWebSocket = require('../api/unusual-whales-ws'); // WebSocket version
 const TierAnalyzer = require('./tier-analyzer');
 const DivergenceDetector = require('./divergence-detector');
 const Logger = require('../utils/logger');
@@ -9,80 +9,150 @@ const _ = require('lodash');
 class FlowAnalyzer {
   constructor() {
     this.tradier = new TradierAPI();
-    this.unusualWhales = new UnusualWhalesAPI();
+    this.unusualWhales = new UnusualWhalesWebSocket(); // WebSocket version
     this.tierAnalyzer = new TierAnalyzer();
     this.divergenceDetector = new DivergenceDetector();
     this.logger = new Logger('flow-analyzer');
+    
+    // Initialize WebSocket connection
+    this.initializeWebSocket();
+  }
+
+  initializeWebSocket() {
+    // Start WebSocket connection
+    this.unusualWhales.connect();
+    
+    // Log WebSocket status
+    this.logger.info('Initialized Unusual Whales WebSocket connection');
+    
+    // Monitor WebSocket connection status
+    setInterval(() => {
+      const stats = this.unusualWhales.getConnectionStats();
+      if (stats.isConnected) {
+        this.logger.debug(`WebSocket connected for ${stats.symbolsWithData} symbols, ${stats.messageCount} messages`);
+      }
+    }, 60000); // Log every minute
+    
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+      this.logger.info('Shutting down WebSocket connection (SIGINT)...');
+      this.unusualWhales.disconnect();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', () => {
+      this.logger.info('Shutting down WebSocket connection (SIGTERM)...');
+      this.unusualWhales.disconnect();
+      process.exit(0);
+    });
   }
 
   async analyzeSymbolFlow(symbol, date = null) {
     // Determine target date for analysis
     const targetDate = date || moment().format('YYYY-MM-DD');
-    const isLiveAnalysis = !date && this.tradier.isMarketOpen();
+    const isLiveAnalysis = !date && this.isMarketOpen();
     
     this.logger.info(`Analyzing institutional flow for ${symbol} on ${targetDate} ${isLiveAnalysis ? '(LIVE)' : '(HISTORICAL)'}`);
     
-    // Fetch data concurrently WITH DATE PARAMETER
-    const [quote, flowData, blocks, complexTrades, deltaConcentration] = await Promise.all([
-      this.tradier.getQuote(symbol).catch(() => {
-        // If we can't get live quote, use a placeholder for historical analysis
-        return { symbol, price: 0, timestamp: new Date() };
-      }),
-      this.unusualWhales.getInstitutionalFlow(symbol, targetDate).catch(() => []),
-      this.unusualWhales.getBlocks(symbol, 500).catch(() => []),
-      this.unusualWhales.getComplexTrades(symbol).catch(() => []),
-      this.unusualWhales.getDeltaConcentration(symbol).catch(() => [])
-    ]);
+    try {
+      // Fetch data concurrently WITH DATE PARAMETER
+      const [quote, flowData, blocks, complexTrades, deltaConcentration] = await Promise.all([
+        this.tradier.getQuote(symbol).catch(() => {
+          // If we can't get live quote, use a placeholder for historical analysis
+          this.logger.warn(`Could not get quote for ${symbol}, using placeholder`);
+          return { symbol, price: 100, timestamp: new Date() };
+        }),
+        this.unusualWhales.getInstitutionalFlow(symbol, targetDate).catch((error) => {
+          this.logger.error(`Error fetching flow for ${symbol}: ${error.message}`);
+          return [];
+        }),
+        this.unusualWhales.getBlocks(symbol, 500, targetDate).catch((error) => {
+          this.logger.error(`Error fetching blocks for ${symbol}: ${error.message}`);
+          return [];
+        }),
+        this.unusualWhales.getComplexTrades(symbol, targetDate).catch((error) => {
+          this.logger.error(`Error fetching complex trades for ${symbol}: ${error.message}`);
+          return [];
+        }),
+        this.unusualWhales.getDeltaConcentration(symbol, targetDate).catch((error) => {
+          this.logger.error(`Error fetching delta concentration for ${symbol}: ${error.message}`);
+          return [];
+        })
+      ]);
 
-    // For historical analysis, we might not have a current quote
-    // Try to get historical quote if live quote fails
-    if (!quote || !quote.price || quote.price === 0) {
-      this.logger.warn(`No live quote for ${symbol}, attempting historical context`);
-      // In a production environment, you would fetch historical quote here
-      // For now, we'll use a placeholder
-    }
-
-    if (flowData.length === 0) {
-      throw new Error(`No institutional flow data available for ${symbol} on ${targetDate}`);
-    }
-
-    // Process flow data with proper date context
-    const processedFlow = this.processFlowData(flowData, quote.price || 100, targetDate);
-    const hourlyBreakdown = this.calculateHourlyBreakdown(processedFlow, targetDate);
-    const tierAnalysis = this.tierAnalyzer.analyzeTiers(processedFlow, quote.price);
-    const tierComposition = this.analyzeTierComposition(processedFlow);
-    const atmFlow = this.calculateATMFlow(processedFlow, quote.price || 100);
-    const complexAnalysis = this.analyzeComplexTrades(complexTrades);
-    const deltaAnalysis = this.analyzeDeltaConcentration(deltaConcentration, quote.price || 100);
-    const divergences = this.divergenceDetector.detectDivergences(processedFlow, hourlyBreakdown);
-    const institutionalLevels = this.calculateInstitutionalLevels(deltaAnalysis, quote.price || 100);
-
-    // Calculate totals
-    const totals = this.calculateTotals(processedFlow, tierAnalysis, atmFlow);
-
-    return {
-      symbol,
-      quote: quote || { symbol, price: 0, timestamp: new Date() },
-      timestamp: new Date(),
-      analysisDate: targetDate,
-      isLiveAnalysis,
-      flow: processedFlow,
-      hourlyBreakdown,
-      tierAnalysis,
-      tierComposition,
-      atmFlow,
-      complexAnalysis,
-      deltaAnalysis,
-      divergences,
-      institutionalLevels,
-      totals,
-      blocks: blocks.slice(0, 5), // Top 5 blocks
-      config: {
-        timezone: process.env.TIMEZONE,
-        atmRange: process.env.ATM_RANGE,
-        minNotional: process.env.MIN_NOTIONAL
+      if (flowData.length === 0) {
+        // Try to get live blocks if no historical data
+        if (isLiveAnalysis) {
+          const liveBlocks = await this.unusualWhales.getLiveBlocks(symbol, 10);
+          if (liveBlocks.length > 0) {
+            this.logger.info(`Using ${liveBlocks.length} live blocks for ${symbol}`);
+            flowData.push(...liveBlocks);
+          }
+        }
+        
+        if (flowData.length === 0) {
+          throw new Error(`No institutional flow data available for ${symbol} on ${targetDate}`);
+        }
       }
-    };
+
+      // Process flow data with proper date context
+      const processedFlow = this.processFlowData(flowData, quote.price || 100, targetDate);
+      const hourlyBreakdown = this.calculateHourlyBreakdown(processedFlow, targetDate);
+      const tierAnalysis = this.tierAnalyzer.analyzeTiers(processedFlow, quote.price);
+      const tierComposition = this.analyzeTierComposition(processedFlow);
+      const atmFlow = this.calculateATMFlow(processedFlow, quote.price || 100);
+      const complexAnalysis = this.analyzeComplexTrades(complexTrades);
+      const deltaAnalysis = this.analyzeDeltaConcentration(deltaConcentration, quote.price || 100);
+      const divergences = this.divergenceDetector.detectDivergences(processedFlow, hourlyBreakdown);
+      const institutionalLevels = this.calculateInstitutionalLevels(deltaAnalysis, quote.price || 100);
+
+      // Calculate totals
+      const totals = this.calculateTotals(processedFlow, tierAnalysis, atmFlow);
+
+      return {
+        symbol,
+        quote: quote || { symbol, price: 100, timestamp: new Date() },
+        timestamp: new Date(),
+        analysisDate: targetDate,
+        isLiveAnalysis,
+        flow: processedFlow,
+        hourlyBreakdown,
+        tierAnalysis,
+        tierComposition,
+        atmFlow,
+        complexAnalysis,
+        deltaAnalysis,
+        divergences,
+        institutionalLevels,
+        totals,
+        blocks: blocks.slice(0, 5), // Top 5 blocks
+        config: {
+          timezone: process.env.TIMEZONE || 'America/New_York',
+          atmRange: process.env.ATM_RANGE || 0.02,
+          minNotional: process.env.MIN_NOTIONAL || 100000
+        }
+      };
+    } catch (error) {
+      this.logger.error(`Analysis error for ${symbol}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  isMarketOpen() {
+    const now = moment().tz('America/New_York');
+    const day = now.day();
+    const hour = now.hour();
+    const minute = now.minute();
+    
+    // Market closed on weekends
+    if (day === 0 || day === 6) return false;
+    
+    // Market hours: 9:30 AM - 4:00 PM ET
+    if (hour < 9 || hour > 16) return false;
+    if (hour === 9 && minute < 30) return false;
+    if (hour === 16 && minute > 0) return false;
+    
+    return true;
   }
 
   processFlowData(flowData, spotPrice, targetDate) {
@@ -223,12 +293,6 @@ class FlowAnalyzer {
       analysisDate: targetDate
     };
   }
-
-  // ... (KEEP ALL OTHER EXISTING METHODS EXACTLY AS THEY ARE)
-  // generateHourlyInsights, calculateATMFlow, interpretATMFlow, analyzeComplexTrades,
-  // analyzeDeltaConcentration, calculateInstitutionalLevels, calculateTotals,
-  // analyzeTierComposition, detectStockOptionIntent
-  // ALL THESE METHODS REMAIN UNCHANGED FROM YOUR PREVIOUS VERSION
 
   generateHourlyInsights(hourly) {
     const insights = [];
@@ -621,6 +685,38 @@ class FlowAnalyzer {
     }
     
     return 'Stock-Option Combo';
+  }
+
+  // NEW: Get real-time WebSocket status
+  getWebSocketStatus() {
+    return this.unusualWhales.getConnectionStats();
+  }
+
+  // NEW: Get live flow data (real-time)
+  async getLiveFlow(symbol, minutesBack = 10) {
+    try {
+      const liveBlocks = await this.unusualWhales.getLiveBlocks(symbol, minutesBack);
+      const quote = await this.tradier.getQuote(symbol).catch(() => ({ price: 100 }));
+      
+      return {
+        symbol,
+        liveBlocks,
+        count: liveBlocks.length,
+        totalNotional: liveBlocks.reduce((sum, block) => sum + (block.notional || 0), 0),
+        spotPrice: quote.price || 100,
+        timestamp: new Date()
+      };
+    } catch (error) {
+      this.logger.error(`Error getting live flow for ${symbol}: ${error.message}`);
+      return {
+        symbol,
+        liveBlocks: [],
+        count: 0,
+        totalNotional: 0,
+        spotPrice: 100,
+        timestamp: new Date()
+      };
+    }
   }
 }
 
