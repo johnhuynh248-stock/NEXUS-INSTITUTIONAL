@@ -333,13 +333,68 @@ class EliteInstitutionalFlowBot {
     this.bot = null;
     this.reportBuilder = new ReportBuilder();
     this.flowAnalyzer = new FlowAnalyzer();
-    this.liveBlockTracker = new LiveBlockTracker(); // ADDED: Live block tracker
+    this.liveBlockTracker = new LiveBlockTracker();
     this.logger = new Logger('bot');
     this.userSessions = new Map();
     this.rateLimits = new Map();
     
+    // Webhook endpoint setup
+    this.setupWebhookEndpoint();
+    
     this.initializeBot();
     this.setupCommands();
+  }
+
+  setupWebhookEndpoint() {
+    if (config.app.port) {
+      const express = require('express');
+      const app = express();
+      
+      app.use(express.json());
+      
+      // Webhook endpoint for Unusual Whales
+      app.post('/webhook/unusual-whales', async (req, res) => {
+        try {
+          const payload = req.body;
+          this.logger.info('Received Unusual Whales webhook');
+          
+          // Process the webhook
+          const result = await this.flowAnalyzer.unusualWhales.processIncomingWebhook(payload);
+          
+          if (result.success) {
+            res.status(200).json({ status: 'success', message: 'Webhook processed' });
+            this.logger.info(`Webhook processed for ${result.symbol} with ${result.count} blocks`);
+            
+            // Notify active sessions about new blocks
+            this.notifyActiveSessions(result.symbol);
+          } else {
+            res.status(400).json({ status: 'error', message: result.error });
+          }
+        } catch (error) {
+          this.logger.error(`Webhook processing error: ${error.message}`);
+          res.status(500).json({ status: 'error', message: 'Internal server error' });
+        }
+      });
+      
+      // Start webhook server
+      app.listen(config.app.port, () => {
+        this.logger.info(`Webhook server listening on port ${config.app.port}`);
+      });
+    }
+  }
+
+  notifyActiveSessions(symbol) {
+    // Notify users who are currently analyzing this symbol
+    for (const [chatId, session] of this.userSessions.entries()) {
+      if (session.symbol === symbol && session.isActive) {
+        this.bot.sendMessage(chatId,
+          `🚨 *NEW INSTITUTIONAL BLOCKS DETECTED*\n` +
+          `Fresh institutional flow detected in ${symbol}\n` +
+          `Use /flow ${symbol} to see updated analysis`,
+          { parse_mode: 'Markdown' }
+        ).catch(err => this.logger.error(`Notification error: ${err.message}`));
+      }
+    }
   }
 
   initializeBot() {
@@ -750,7 +805,8 @@ When you use \`/flow SYMBOL\` during market hours:
         symbol,
         date: targetDate,
         startTime: new Date(),
-        requestCount: (this.userSessions.get(chatId)?.requestCount || 0) + 1
+        requestCount: (this.userSessions.get(chatId)?.requestCount || 0) + 1,
+        isActive: true
       });
 
       // Fetch and analyze data WITH DATE PARAMETER
