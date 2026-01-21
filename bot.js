@@ -338,11 +338,28 @@ class EliteInstitutionalFlowBot {
     this.userSessions = new Map();
     this.rateLimits = new Map();
     
+    this.isRailway = process.env.RAILWAY_ENVIRONMENT_ID !== undefined;
+    
+    if (this.isRailway) {
+      this.logger.info('🚂 Detected Railway deployment environment');
+    }
+    
     // Webhook endpoint setup
     this.setupWebhookEndpoint();
     
     this.initializeBot();
     this.setupCommands();
+  }
+
+  // ADD THIS MISSING METHOD
+  logRailwayInfo() {
+    if (this.isRailway) {
+      this.logger.info('🏗️  Railway Deployment Information:');
+      this.logger.info(`   Environment: ${process.env.NODE_ENV || 'production'}`);
+      this.logger.info(`   Public Domain: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Not set'}`);
+      this.logger.info(`   Service ID: ${process.env.RAILWAY_SERVICE_ID || 'Not set'}`);
+      this.logger.info(`   Deployment ID: ${process.env.RAILWAY_DEPLOYMENT_ID || 'Not set'}`);
+    }
   }
 
   setupWebhookEndpoint() {
@@ -407,12 +424,23 @@ class EliteInstitutionalFlowBot {
       });
       
       this.logger.info('🤖 ELITE INSTITUTIONAL FLOW BOT initialized');
+      this.logRailwayInfo();
+      
       this.logger.info('📊 Using REAL production data only');
       this.logger.info('✅ Tradier API: Production');
       this.logger.info('✅ Unusual Whales API: Institutional Flow');
       
     } catch (error) {
       this.logger.error(`Failed to initialize bot: ${error.message}`);
+      
+      // FIXED: Added Railway-specific error handling
+      if (this.isRailway) {
+        this.logger.error('Please check your Railway environment variables:');
+        this.logger.error('1. TELEGRAM_BOT_TOKEN');
+        this.logger.error('2. TRADIER_API_KEY');
+        this.logger.error('3. UNUSUAL_WHALES_API_KEY');
+      }
+      
       process.exit(1);
     }
   }
@@ -564,8 +592,19 @@ class EliteInstitutionalFlowBot {
   }
 
   async sendWelcomeMessage(chatId) {
+    // FIXED: Added Railway note to welcome message
+    const railwayNote = this.isRailway ? `
+*🚂 RAILWAY DEPLOYMENT:*
+• Running on Railway cloud platform
+• 24/7 availability
+• Automated health checks
+• Real-time institutional flow analysis
+    ` : '';
+    
     const welcomeMessage = `
 🏛️ *ELITE INSTITUTIONAL OPTIONS FLOW ANALYST*
+
+${railwayNote}
 
 *DATA SOURCES:*
 ✅ Tradier PRODUCTION API (equity + options)
@@ -673,6 +712,15 @@ When you use \`/flow SYMBOL\` during market hours:
     const isMarketOpen = this.isMarketOpen();
     const tradingDate = this.getTradingDate();
     
+    // FIXED: Added Railway-specific info
+    const railwayInfo = this.isRailway ? `
+*Railway Platform:*
+• Environment: ${process.env.NODE_ENV || 'production'}
+• Service ID: ${process.env.RAILWAY_SERVICE_ID || 'Not available'}
+• Domain: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Not available'}
+• Uptime: ${Math.round(process.uptime())} seconds
+  ` : '';
+  
     const statusMessage = `
 🏛️ *BOT STATUS REPORT*
 
@@ -684,6 +732,8 @@ When you use \`/flow SYMBOL\` during market hours:
 *API Status:*
 • Tradier API: ✅ Connected
 • Unusual Whales API: ✅ Connected
+
+${railwayInfo}
 
 *Advanced Features Active:*
 • 🚨 Live Block Detection: ${isMarketOpen ? '✅ ACTIVE' : '❌ Market Closed'}
@@ -702,6 +752,8 @@ When you use \`/flow SYMBOL\` during market hours:
 • Historical analysis: ✅ 24/7 Available
 • Weekend data: ✅ Last trading day
 • Data integrity: ✅ STRICT RULES ENFORCED
+
+*Platform:* ${this.isRailway ? '🚂 Railway' : '💻 Local'}
     `;
 
     await this.bot.sendMessage(chatId, statusMessage, {
@@ -754,18 +806,22 @@ When you use \`/flow SYMBOL\` during market hours:
     return true;
   }
 
-  // Rate limiting helper method
+  // Rate limiting helper method - FIXED for Railway
   checkRateLimit(chatId) {
     const now = Date.now();
     const userLimit = this.rateLimits.get(chatId) || { count: 0, lastRequest: 0 };
     
-    // Reset if more than 1 minute passed
-    if (now - userLimit.lastRequest > 60000) {
+    // Railway uses stricter limits
+    const maxRequests = this.isRailway ? 3 : 5;
+    const resetTime = this.isRailway ? 120000 : 60000; // 2 min vs 1 min
+    
+    // Reset if more than resetTime passed
+    if (now - userLimit.lastRequest > resetTime) {
       userLimit.count = 0;
     }
     
-    // Check if user exceeded limit (e.g., 5 requests per minute)
-    if (userLimit.count >= 5) {
+    // Check if user exceeded limit
+    if (userLimit.count >= maxRequests) {
       return false;
     }
     
@@ -777,10 +833,11 @@ When you use \`/flow SYMBOL\` during market hours:
 
   async generateFlowReport(chatId, symbol, specificDate = null) {
     try {
-      // Rate limiting check
+      // Rate limiting check - FIXED for Railway
       if (!this.checkRateLimit(chatId)) {
+        const waitTime = this.isRailway ? '2 minutes' : '1 minute';
         await this.bot.sendMessage(chatId,
-          `⏸️ Rate limit exceeded. Please wait 1 minute between requests.\n` +
+          `⏸️ Rate limit exceeded. Please wait ${waitTime} between requests.\n` +
           `You can still use historical analysis: /flow_hist ${symbol} YYYY-MM-DD`,
           { parse_mode: 'Markdown' }
         );
@@ -857,6 +914,15 @@ When you use \`/flow SYMBOL\` during market hours:
     } catch (error) {
       this.logger.error(`Error generating report for ${symbol}: ${error.message}`);
       
+      // FIXED: Added Railway-specific error suggestions
+      const railwayTips = this.isRailway ? `
+*Railway Tips:*
+• Check your environment variables in Railway dashboard
+• Verify API keys are correct
+• Check Railway logs for detailed errors
+• Ensure all required APIs are accessible
+    ` : '';
+    
       let errorMessage = `❌ *INSTITUTIONAL FLOW ERROR*\n\n`;
       
       if (error.message.includes('symbol') || error.message.includes('invalid')) {
@@ -868,14 +934,12 @@ When you use \`/flow SYMBOL\` during market hours:
         errorMessage += `Possible reasons:\n`;
         errorMessage += `• No institutional flow that day\n`;
         errorMessage += `• API temporarily unavailable\n`;
-        errorMessage += `• Market holiday (no trading)\n`;
+        errorMessage += `• Market holiday (no trading)\n\n`;
+        errorMessage += `${railwayTips}\n`;
         errorMessage += `Try a different date with /flow_hist ${symbol} YYYY-MM-DD`;
-      } else if (error.message.includes('market closed')) {
-        const targetDate = this.getTradingDate();
-        errorMessage += `Market is closed. Showing historical analysis for ${targetDate}\n`;
-        errorMessage += `Use /flow_hist ${symbol} YYYY-MM-DD for specific dates`;
       } else {
-        errorMessage += `System error: ${error.message}`;
+        errorMessage += `System error: ${error.message}\n\n`;
+        errorMessage += railwayTips;
       }
       
       await this.bot.sendMessage(chatId, errorMessage, {
@@ -943,10 +1007,11 @@ When you use \`/flow SYMBOL\` during market hours:
       return;
     }
 
-    // Rate limiting check for multi-symbol
+    // Rate limiting check for multi-symbol - FIXED for Railway
     if (!this.checkRateLimit(chatId)) {
+      const waitTime = this.isRailway ? '2 minutes' : '1 minute';
       await this.bot.sendMessage(chatId,
-        `⏸️ Rate limit exceeded. Please wait 1 minute between requests.\n` +
+        `⏸️ Rate limit exceeded. Please wait ${waitTime} between requests.\n` +
         `Multi-symbol analysis requires additional API calls.`,
         { parse_mode: 'Markdown' }
       );
@@ -1040,18 +1105,275 @@ When you use \`/flow SYMBOL\` during market hours:
   start() {
     this.logger.info('🚀 Bot started and listening for commands...');
     
-    // Keep-alive for Railway
-    if (config.app.port) {
-      const http = require('http');
-      const server = http.createServer((req, res) => {
-        res.writeHead(200);
-        res.end('ELITE INSTITUTIONAL FLOW BOT - OPERATIONAL');
-      });
-      
-      server.listen(config.app.port, () => {
-        this.logger.info(`HTTP server listening on port ${config.app.port}`);
-      });
+    // Railway-specific startup message
+    const isRailway = process.env.RAILWAY_ENVIRONMENT_ID !== undefined;
+    if (isRailway) {
+      this.logger.info('🏗️  Running on Railway platform');
+      this.logger.info(`🌐 Public Domain: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Not set'}`);
+      this.logger.info(`🚂 Service ID: ${process.env.RAILWAY_SERVICE_ID || 'Not set'}`);
     }
+    
+    // Keep-alive for Railway with health check endpoint
+    const http = require('http');
+    const server = http.createServer((req, res) => {
+      // Health check endpoint for Railway
+      if (req.url === '/health' || req.url === '/healthcheck') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'healthy',
+          timestamp: new Date().toISOString(),
+          service: 'institutional-flow-bot',
+          environment: process.env.NODE_ENV || 'development'
+        }));
+        return;
+      }
+      
+      // Status endpoint
+      if (req.url === '/status') {
+        const now = new Date();
+        const nyTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          service: 'Elite Institutional Flow Bot',
+          status: 'operational',
+          time: {
+            utc: now.toISOString(),
+            ny: nyTime.toISOString()
+          },
+          environment: process.env.NODE_ENV || 'development',
+          platform: isRailway ? 'railway' : 'local',
+          memory: {
+            used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+            total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+          },
+          uptime: process.uptime(),
+          sessions: this.userSessions.size
+        }));
+        return;
+      }
+      
+      // Root endpoint with HTML page
+      if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>🏛️ Elite Institutional Flow Bot</title>
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+              }
+              .container {
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                overflow: hidden;
+                max-width: 600px;
+                width: 100%;
+              }
+              .header {
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                color: white;
+                padding: 40px;
+                text-align: center;
+              }
+              .header h1 {
+                font-size: 2.5rem;
+                margin-bottom: 10px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 15px;
+              }
+              .header p {
+                opacity: 0.8;
+                font-size: 1.1rem;
+              }
+              .content {
+                padding: 40px;
+              }
+              .status-card {
+                background: #f8f9fa;
+                border-radius: 15px;
+                padding: 25px;
+                margin-bottom: 25px;
+                border-left: 5px solid #667eea;
+              }
+              .status-card h3 {
+                color: #333;
+                margin-bottom: 15px;
+                font-size: 1.3rem;
+              }
+              .status-card p {
+                color: #666;
+                line-height: 1.6;
+                margin-bottom: 10px;
+              }
+              .stats {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                gap: 15px;
+                margin-top: 20px;
+              }
+              .stat {
+                background: white;
+                padding: 15px;
+                border-radius: 10px;
+                text-align: center;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+              }
+              .stat .number {
+                font-size: 2rem;
+                font-weight: bold;
+                color: #667eea;
+                margin-bottom: 5px;
+              }
+              .stat .label {
+                font-size: 0.9rem;
+                color: #666;
+              }
+              .instructions {
+                background: #fff9e6;
+                border-radius: 15px;
+                padding: 25px;
+                border-left: 5px solid #ffc107;
+              }
+              .instructions h3 {
+                color: #333;
+                margin-bottom: 15px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+              }
+              .instructions ul {
+                list-style: none;
+                padding-left: 0;
+              }
+              .instructions li {
+                padding: 10px 0;
+                border-bottom: 1px solid rgba(0,0,0,0.05);
+                display: flex;
+                align-items: center;
+                gap: 10px;
+              }
+              .instructions li:last-child {
+                border-bottom: none;
+              }
+              .badge {
+                display: inline-block;
+                padding: 5px 10px;
+                border-radius: 20px;
+                font-size: 0.8rem;
+                font-weight: bold;
+              }
+              .badge.railway {
+                background: #0b0d0e;
+                color: white;
+              }
+              .badge.telegram {
+                background: #0088cc;
+                color: white;
+              }
+              .badge.live {
+                background: #28a745;
+                color: white;
+              }
+              .footer {
+                text-align: center;
+                padding: 20px;
+                color: #666;
+                font-size: 0.9rem;
+                border-top: 1px solid #eee;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>🏛️ Elite Institutional Flow Bot</h1>
+                <p>Real-time institutional options flow analysis</p>
+                ${isRailway ? '<span class="badge railway">🚂 Deployed on Railway</span>' : ''}
+              </div>
+              
+              <div class="content">
+                <div class="status-card">
+                  <h3>📊 Bot Status</h3>
+                  <p>✅ Bot is running and ready to process institutional flow data</p>
+                  <p>⏰ Timezone: America/New_York (Market Hours)</p>
+                  <p>🚀 Status: <strong>OPERATIONAL</strong></p>
+                  
+                  <div class="stats">
+                    <div class="stat">
+                      <div class="number">${this.userSessions.size}</div>
+                      <div class="label">Active Sessions</div>
+                    </div>
+                    <div class="stat">
+                      <div class="number">24/7</div>
+                      <div class="label">Availability</div>
+                    </div>
+                    <div class="stat">
+                      <div class="number">${this.isMarketOpen() ? '✅' : '❌'}</div>
+                      <div class="label">Market Open</div>
+                    </div>
+                    <div class="stat">
+                      <div class="number">⚡</div>
+                      <div class="label">Live Blocks</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="instructions">
+                  <h3>📱 How to Use</h3>
+                  <ul>
+                    <li>1. Open Telegram and find the bot</li>
+                    <li>2. Send a stock symbol (e.g., "SPY")</li>
+                    <li>3. Or use commands: /flow SPY, /multiflow SPY,QQQ,AAPL</li>
+                    <li>4. Receive real-time institutional flow analysis</li>
+                    <li>5. Get live block alerts during market hours</li>
+                  </ul>
+                  <p style="margin-top: 15px; color: #666;">
+                    <strong>Note:</strong> Market data is fetched from Tradier & Unusual Whales APIs
+                  </p>
+                </div>
+              </div>
+              
+              <div class="footer">
+                <p>Powered by Tradier & Unusual Whales APIs</p>
+                <p>© ${new Date().getFullYear()} - Institutional Flow Analysis</p>
+              </div>
+            </div>
+          </body>
+          </html>
+        `);
+        return;
+      }
+      
+      res.writeHead(404);
+      res.end('Not Found');
+    });
+    
+    server.listen(config.app.port, () => {
+      this.logger.info(`🌐 HTTP server listening on port ${config.app.port}`);
+      this.logger.info(`🏥 Health check: http://localhost:${config.app.port}/health`);
+      this.logger.info(`📊 Status page: http://localhost:${config.app.port}/`);
+      
+      if (isRailway && process.env.RAILWAY_PUBLIC_DOMAIN) {
+        const publicUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
+        this.logger.info(`🌍 Public URL: ${publicUrl}`);
+        this.logger.info(`🔗 Health Check URL: ${publicUrl}/health`);
+      }
+    });
   }
 }
 
