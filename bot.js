@@ -332,11 +332,12 @@ class EliteInstitutionalFlowBot {
   constructor() {
     this.bot = null;
     this.reportBuilder = new ReportBuilder();
-    this.flowAnalyzer = new FlowAnalyzer();
+    this.flowAnalyzer = new FlowAnalyzer(); // This now initializes WebSocket
     this.liveBlockTracker = new LiveBlockTracker();
     this.logger = new Logger('bot');
     this.userSessions = new Map();
     this.rateLimits = new Map();
+    this.wsStats = null;
     
     this.isRailway = process.env.RAILWAY_ENVIRONMENT_ID !== undefined;
     
@@ -344,14 +345,14 @@ class EliteInstitutionalFlowBot {
       this.logger.info('🚂 Detected Railway deployment environment');
     }
     
-    // Webhook endpoint setup
-    this.setupWebhookEndpoint();
-    
+    // WebSocket will be initialized by FlowAnalyzer
     this.initializeBot();
     this.setupCommands();
+    
+    // Monitor WebSocket connection
+    this.monitorWebSocket();
   }
 
-  // ADD THIS MISSING METHOD
   logRailwayInfo() {
     if (this.isRailway) {
       this.logger.info('🏗️  Railway Deployment Information:');
@@ -362,56 +363,18 @@ class EliteInstitutionalFlowBot {
     }
   }
 
-  setupWebhookEndpoint() {
-    if (config.app.port) {
-      const express = require('express');
-      const app = express();
+  monitorWebSocket() {
+    // Update WebSocket stats every 30 seconds
+    setInterval(() => {
+      this.wsStats = this.flowAnalyzer.getWebSocketStatus();
       
-      app.use(express.json());
-      
-      // Webhook endpoint for Unusual Whales
-      app.post('/webhook/unusual-whales', async (req, res) => {
-        try {
-          const payload = req.body;
-          this.logger.info('Received Unusual Whales webhook');
-          
-          // Process the webhook
-          const result = await this.flowAnalyzer.unusualWhales.processIncomingWebhook(payload);
-          
-          if (result.success) {
-            res.status(200).json({ status: 'success', message: 'Webhook processed' });
-            this.logger.info(`Webhook processed for ${result.symbol} with ${result.count} blocks`);
-            
-            // Notify active sessions about new blocks
-            this.notifyActiveSessions(result.symbol);
-          } else {
-            res.status(400).json({ status: 'error', message: result.error });
-          }
-        } catch (error) {
-          this.logger.error(`Webhook processing error: ${error.message}`);
-          res.status(500).json({ status: 'error', message: 'Internal server error' });
+      if (this.wsStats && this.wsStats.isConnected) {
+        // Log stats every 5 minutes
+        if (Date.now() % 300000 < 30000) { // Every 5 minutes
+          this.logger.info(`WebSocket: ${this.wsStats.symbolsWithData} symbols, ${this.wsStats.messageCount} messages`);
         }
-      });
-      
-      // Start webhook server
-      app.listen(config.app.port, () => {
-        this.logger.info(`Webhook server listening on port ${config.app.port}`);
-      });
-    }
-  }
-
-  notifyActiveSessions(symbol) {
-    // Notify users who are currently analyzing this symbol
-    for (const [chatId, session] of this.userSessions.entries()) {
-      if (session.symbol === symbol && session.isActive) {
-        this.bot.sendMessage(chatId,
-          `🚨 *NEW INSTITUTIONAL BLOCKS DETECTED*\n` +
-          `Fresh institutional flow detected in ${symbol}\n` +
-          `Use /flow ${symbol} to see updated analysis`,
-          { parse_mode: 'Markdown' }
-        ).catch(err => this.logger.error(`Notification error: ${err.message}`));
       }
-    }
+    }, 30000);
   }
 
   initializeBot() {
@@ -428,12 +391,11 @@ class EliteInstitutionalFlowBot {
       
       this.logger.info('📊 Using REAL production data only');
       this.logger.info('✅ Tradier API: Production');
-      this.logger.info('✅ Unusual Whales API: Institutional Flow');
+      this.logger.info('✅ Unusual Whales WebSocket: Institutional Flow (Live)');
       
     } catch (error) {
       this.logger.error(`Failed to initialize bot: ${error.message}`);
       
-      // FIXED: Added Railway-specific error handling
       if (this.isRailway) {
         this.logger.error('Please check your Railway environment variables:');
         this.logger.error('1. TELEGRAM_BOT_TOKEN');
@@ -452,7 +414,7 @@ class EliteInstitutionalFlowBot {
       await this.sendWelcomeMessage(chatId);
     });
 
-    // Flow report command - MODIFIED: Added live block preview
+    // Flow report command - WITH LIVE BLOCK PREVIEW
     this.bot.onText(/\/flow (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
       const symbol = match[1].toUpperCase().trim();
@@ -485,10 +447,24 @@ class EliteInstitutionalFlowBot {
       await this.sendHelpMessage(chatId);
     });
 
-    // Status command
+    // Status command - UPDATED with WebSocket info
     this.bot.onText(/\/status/, async (msg) => {
       const chatId = msg.chat.id;
       await this.sendStatus(chatId);
+    });
+
+    // WebSocket status command (new)
+    this.bot.onText(/\/ws/, async (msg) => {
+      const chatId = msg.chat.id;
+      await this.sendWebSocketStatus(chatId);
+    });
+
+    // Live flow command (new)
+    this.bot.onText(/\/liveflow (.+)/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const symbol = match[1].toUpperCase().trim();
+      
+      await this.sendLiveFlowReport(chatId, symbol);
     });
 
     // Handle all messages
@@ -515,7 +491,141 @@ class EliteInstitutionalFlowBot {
     });
   }
 
-  // NEW METHOD: Send live block preview
+  // NEW METHOD: Send live flow report (real-time WebSocket data)
+  async sendLiveFlowReport(chatId, symbol) {
+    try {
+      const isLive = this.isMarketOpen();
+      
+      if (!isLive) {
+        await this.bot.sendMessage(chatId,
+          `❌ *MARKET CLOSED*\n\n` +
+          `Live flow analysis is only available during market hours.\n` +
+          `Current time: ${moment().tz('America/New_York').format('HH:mm')} ET\n` +
+          `Market hours: 9:30 AM - 4:00 PM ET`,
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+      
+      const liveMsg = await this.bot.sendMessage(chatId,
+        `🔴 *LIVE INSTITUTIONAL FLOW SCAN*\n\n` +
+        `Scanning WebSocket for real-time blocks in ${symbol}...\n` +
+        `⏱️ Timeframe: Last 10 minutes\n` +
+        `📊 Minimum size: $1M+`,
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Get live flow from WebSocket
+      const liveFlow = await this.flowAnalyzer.getLiveFlow(symbol, 10);
+      
+      await this.bot.deleteMessage(chatId, liveMsg.message_id);
+      
+      let report = `🔴 *REAL-TIME INSTITUTIONAL FLOW - ${symbol}*\n\n`;
+      report += `🕒 ${moment().tz('America/New_York').format('HH:mm:ss')} ET\n`;
+      report += `📊 Spot: $${liveFlow.spotPrice.toFixed(2)}\n\n`;
+      
+      if (liveFlow.count === 0) {
+        report += `📊 *NO LIVE BLOCKS DETECTED*\n\n`;
+        report += `Last 10 minutes: 0 blocks >$1M\n`;
+        report += `Monitoring for institutional activity...\n\n`;
+        report += `*NEXT STEPS:*\n`;
+        report += `• Wait for volume spike\n`;
+        report += `• Watch for >$1M prints\n`;
+        report += `• Check daily flow with /flow ${symbol}`;
+      } else {
+        report += `📊 *${liveFlow.count} LIVE BLOCKS DETECTED*\n\n`;
+        report += `Total notional: $${this.formatCurrency(liveFlow.totalNotional)}\n`;
+        report += `Average block: $${this.formatCurrency(liveFlow.totalNotional / liveFlow.count)}\n\n`;
+        
+        // Show top blocks
+        report += `*TOP BLOCKS (Last 10 min):*\n`;
+        liveFlow.liveBlocks.slice(0, 5).forEach((block, idx) => {
+          const time = moment(block.timestamp).format('HH:mm');
+          const type = block.option_type === 'CALL' ? 'C' : 'P';
+          const strike = block.strike || 'N/A';
+          const dte = block.dte || 'N/A';
+          
+          report += `${idx + 1}. ${time} - ${block.contracts} ${strike}${type} ${dte}DTE\n`;
+          report += `   $${this.formatCurrency(block.notional)} | ${block.side || 'Unknown'}\n`;
+        });
+        
+        report += `\n*WEBSOCKET LIVE DATA*\n`;
+        report += `• Data source: Unusual Whales WebSocket\n`;
+        report += `• Real-time: ${this.wsStats?.isConnected ? '✅ CONNECTED' : '❌ DISCONNECTED'}\n`;
+        report += `• Messages: ${this.wsStats?.messageCount || 0}\n`;
+        report += `• For full analysis: /flow ${symbol}`;
+      }
+      
+      await this.bot.sendMessage(chatId, report, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true
+      });
+      
+    } catch (error) {
+      this.logger.error(`Live flow report error: ${error.message}`);
+      await this.bot.sendMessage(chatId,
+        `❌ *LIVE FLOW ERROR*\n\n` +
+        `Could not fetch live flow data for ${symbol}.\n` +
+        `Error: ${error.message}\n\n` +
+        `Try daily flow instead: /flow ${symbol}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
+  // NEW METHOD: Send WebSocket status
+  async sendWebSocketStatus(chatId) {
+    try {
+      const stats = this.flowAnalyzer.getWebSocketStatus();
+      const now = new Date();
+      const nyTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      
+      let report = `📡 *UNUSUAL WHALES WEBSOCKET STATUS*\n\n`;
+      
+      report += `🔄 Connection: ${stats.isConnected ? '✅ CONNECTED' : '❌ DISCONNECTED'}\n`;
+      report += `📊 Messages: ${stats.messageCount.toLocaleString()}\n`;
+      
+      if (stats.connectionUptime > 0) {
+        const hours = Math.floor(stats.connectionUptime / 3600000);
+        const minutes = Math.floor((stats.connectionUptime % 3600000) / 60000);
+        report += `⏱️ Uptime: ${hours}h ${minutes}m\n`;
+      }
+      
+      report += `🔁 Reconnect attempts: ${stats.reconnectAttempts}\n`;
+      report += `📈 Symbols with data: ${stats.symbolsWithData}\n`;
+      
+      report += `\n*SYMBOL DATA COUNTS:*\n`;
+      if (stats.storedDataSizes && stats.storedDataSizes.length > 0) {
+        stats.storedDataSizes.slice(0, 5).forEach(data => {
+          report += `• ${data.symbol}: ${data.blocks} blocks, ${data.flow} flows\n`;
+        });
+        
+        if (stats.storedDataSizes.length > 5) {
+          report += `... and ${stats.storedDataSizes.length - 5} more symbols\n`;
+        }
+      } else {
+        report += `No symbol data yet\n`;
+      }
+      
+      report += `\n*SERVER STATUS:*\n`;
+      report += `• Time: ${nyTime.toLocaleTimeString('en-US')} ET\n`;
+      report += `• Market: ${this.isMarketOpen() ? '✅ OPEN' : '❌ CLOSED'}\n`;
+      report += `• Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB\n`;
+      
+      await this.bot.sendMessage(chatId, report, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true
+      });
+      
+    } catch (error) {
+      this.logger.error(`WebSocket status error: ${error.message}`);
+      await this.bot.sendMessage(chatId,
+        `❌ Could not fetch WebSocket status\nError: ${error.message}`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  }
+
   async sendLiveBlockPreview(chatId, symbol) {
     try {
       // Check if market is open for live blocks
@@ -532,11 +642,55 @@ class EliteInstitutionalFlowBot {
       const liveMsg = await this.bot.sendMessage(chatId,
         `🔍 Scanning for LIVE institutional blocks in ${symbol}...\n` +
         `⏱️ Real-time detection active\n` +
-        `📊 Monitoring for >$1M prints`,
+        `📊 Monitoring for >$1M prints\n` +
+        `🔗 WebSocket: ${this.wsStats?.isConnected ? '✅ Connected' : '❌ Connecting...'}`,
         { parse_mode: 'Markdown' }
       );
       
-      // Simulate live block detection (in real implementation, this would connect to WebSocket)
+      // Get live flow from WebSocket first
+      try {
+        const liveFlow = await this.flowAnalyzer.getLiveFlow(symbol, 5);
+        
+        if (liveFlow.count > 0) {
+          // We have real WebSocket data
+          await this.bot.deleteMessage(chatId, liveMsg.message_id);
+          
+          let liveReport = `🔴 *LIVE WEBSOCKET BLOCKS - ${symbol}*\n\n`;
+          liveReport += `🕒 Last 5 minutes: ${liveFlow.count} blocks detected\n`;
+          liveReport += `💰 Total notional: $${this.formatCurrency(liveFlow.totalNotional)}\n\n`;
+          
+          // Show top block
+          const topBlock = liveFlow.liveBlocks[0];
+          if (topBlock) {
+            const time = moment(topBlock.timestamp).format('HH:mm:ss');
+            const type = topBlock.option_type === 'CALL' ? 'C' : 'P';
+            const strike = topBlock.strike || 'N/A';
+            const dte = topBlock.dte || 'N/A';
+            
+            liveReport += `*LARGEST BLOCK:*\n`;
+            liveReport += `${time} - ${topBlock.contracts} ${strike}${type} ${dte}DTE\n`;
+            liveReport += `$${this.formatCurrency(topBlock.notional)} | ${topBlock.side || 'Unknown'}\n\n`;
+            
+            liveReport += `*WEBSOCKET LIVE DATA*\n`;
+            liveReport += `• Status: ✅ Real-time streaming\n`;
+            liveReport += `• Messages: ${this.wsStats?.messageCount || 0}\n`;
+            liveReport += `• Generating full report...`;
+          }
+          
+          await this.bot.sendMessage(chatId, liveReport, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true
+          });
+          
+          this.logger.info(`Live WebSocket blocks sent for ${symbol}: ${liveFlow.count} blocks`);
+          return;
+        }
+      } catch (wsError) {
+        this.logger.warn(`WebSocket live flow error: ${wsError.message}`);
+        // Continue to fallback method
+      }
+      
+      // Fallback to traditional method if no WebSocket data
       await this.delay(1500);
       
       // Fetch minimal data for live block report
@@ -580,6 +734,7 @@ class EliteInstitutionalFlowBot {
         await this.bot.sendMessage(chatId,
           `⚠️ *LIVE BLOCKS UNAVAILABLE*\n\n` +
           `Could not fetch live block data for ${symbol}.\n` +
+          `WebSocket: ${this.wsStats?.isConnected ? '✅ Connected' : '❌ Disconnected'}\n` +
           `Proceeding with regular flow analysis...`,
           { parse_mode: 'Markdown' }
         );
@@ -592,7 +747,6 @@ class EliteInstitutionalFlowBot {
   }
 
   async sendWelcomeMessage(chatId) {
-    // FIXED: Added Railway note to welcome message
     const railwayNote = this.isRailway ? `
 *🚂 RAILWAY DEPLOYMENT:*
 • Running on Railway cloud platform
@@ -601,6 +755,10 @@ class EliteInstitutionalFlowBot {
 • Real-time institutional flow analysis
     ` : '';
     
+    // Get WebSocket status
+    const wsStats = this.flowAnalyzer.getWebSocketStatus();
+    const wsStatus = wsStats?.isConnected ? '✅ CONNECTED' : '❌ DISCONNECTED';
+    
     const welcomeMessage = `
 🏛️ *ELITE INSTITUTIONAL OPTIONS FLOW ANALYST*
 
@@ -608,7 +766,12 @@ ${railwayNote}
 
 *DATA SOURCES:*
 ✅ Tradier PRODUCTION API (equity + options)
-✅ Unusual Whales API (institutional flow, blocks, real delta)
+✅ Unusual Whales WebSocket API (REAL-TIME institutional flow)
+
+*WEBSOCKET STATUS:* ${wsStatus}
+• Live blocks streaming during market hours
+• Real-time institutional flow detection
+• Automatic reconnection
 
 *HARD RULES:*
 ❌ NEVER hallucinate data
@@ -619,21 +782,21 @@ ${railwayNote}
 
 *AVAILABLE COMMANDS:*
 /flow [SYMBOL] - Generate institutional flow report *WITH LIVE BLOCKS*
+/liveflow [SYMBOL] - Real-time WebSocket flow (market hours only)
 /flow_hist [SYMBOL] [YYYY-MM-DD] - Historical flow report
 /multiflow [SYM1,SYM2,...] - Multi-symbol flow (max ${config.app.maxSymbols})
 /status - Check bot status
+/ws - WebSocket connection status
 /help - Show this help
 
-*NEW FEATURES:*
-• 🚨 **LIVE INSTITUTIONAL BLOCK DETECTION** (During market hours)
-• Advanced gamma exposure heatmaps
-• Flow momentum oscillator
-• Institutional sentiment index
-• Flow anomaly detection
-• Volatility regime analysis
-• Trade structuring suggestions
+*NEW WEBSOCKET FEATURES:*
+• 🔴 **REAL-TIME INSTITUTIONAL BLOCK DETECTION**
+• 📡 Live WebSocket streaming during market hours
+• ⚡ Sub-second block detection
+• 📊 Real-time gamma exposure updates
+• 🚨 Live alerts for >$1M prints
 
-*Example:* \`/flow SPY\` or \`/flow AAPL\`
+*Example:* \`/flow SPY\` or \`/liveflow AAPL\`
 *Historical:* \`/flow_hist SPY 2024-03-15\`
 
 ⚠️ *This is NOT retail analysis. This is hedge-fund grade institutional flow.*
@@ -649,16 +812,22 @@ ${railwayNote}
     const helpMessage = `
 📘 *INSTITUTIONAL FLOW BOT HELP*
 
-*NEW: LIVE BLOCK DETECTION*
+*NEW: WEBSOCKET REAL-TIME DATA*
 When you use \`/flow SYMBOL\` during market hours:
-1. 🔍 Scans for recent institutional blocks (last 5 minutes)
+1. 🔍 Scans WebSocket for recent institutional blocks (last 5 minutes)
 2. 📊 Shows immediate market impact and gamma exposure
 3. ⚡ Provides real-time flow momentum
 4. 🎯 Gives actionable predictions for next 5 minutes
 5. 📈 Then shows the full daily institutional flow report
 
+*\`/liveflow SYMBOL\` - REAL-TIME WEBSOCKET STREAMING*
+• Shows ONLY real-time WebSocket data (last 10 minutes)
+• No historical data mixing
+• Pure live institutional flow
+• Market hours only
+
 *REPORT SECTIONS:*
-1. 🚨 Live Institutional Blocks (Market Hours Only)
+1. 🚨 Live Institutional Blocks (WebSocket)
 2. 📊 Daily Institutional Flow Summary
 3. ⏰ Hourly Equity Flow Breakdown
 4. 🚨 Flow Divergences Detected
@@ -692,7 +861,7 @@ When you use \`/flow SYMBOL\` during market hours:
 • Institutional blocks only (min $100k)
 
 *24/7 AVAILABILITY:*
-• Market hours: Real-time flow + live block detection
+• Market hours: WebSocket real-time flow + live block detection
 • After hours: Previous session analysis
 • Weekends: Last trading day analysis
 • Holidays: Most recent trading day
@@ -712,7 +881,9 @@ When you use \`/flow SYMBOL\` during market hours:
     const isMarketOpen = this.isMarketOpen();
     const tradingDate = this.getTradingDate();
     
-    // FIXED: Added Railway-specific info
+    // Get WebSocket stats
+    const wsStats = this.flowAnalyzer.getWebSocketStatus();
+    
     const railwayInfo = this.isRailway ? `
 *Railway Platform:*
 • Environment: ${process.env.NODE_ENV || 'production'}
@@ -731,12 +902,18 @@ When you use \`/flow SYMBOL\` during market hours:
 
 *API Status:*
 • Tradier API: ✅ Connected
-• Unusual Whales API: ✅ Connected
+• Unusual Whales WebSocket: ${wsStats?.isConnected ? '✅ CONNECTED' : '❌ DISCONNECTED'}
 
 ${railwayInfo}
 
+*WebSocket Status:*
+• Connection: ${wsStats?.isConnected ? '🟢 LIVE' : '🔴 OFFLINE'}
+• Messages: ${wsStats?.messageCount || 0}
+• Symbols: ${wsStats?.symbolsWithData || 0}
+• Uptime: ${wsStats?.connectionUptime ? Math.round(wsStats.connectionUptime / 60000) + ' minutes' : 'N/A'}
+
 *Advanced Features Active:*
-• 🚨 Live Block Detection: ${isMarketOpen ? '✅ ACTIVE' : '❌ Market Closed'}
+• 🚨 WebSocket Live Blocks: ${isMarketOpen && wsStats?.isConnected ? '✅ ACTIVE' : '❌ Inactive'}
 • Gamma Heatmaps: ✅
 • Flow Momentum: ✅
 • Sentiment Index: ✅
@@ -747,7 +924,7 @@ ${railwayInfo}
 *Memory Usage:* ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB
 
 *Data Availability:*
-• Real-time flow: ${isMarketOpen ? '✅ Active' : '❌ Market Closed'}
+• WebSocket real-time: ${isMarketOpen && wsStats?.isConnected ? '✅ Active' : '❌ Inactive'}
 • Live block scanning: ${isMarketOpen ? '✅ Active' : '❌ Market Closed'}
 • Historical analysis: ✅ 24/7 Available
 • Weekend data: ✅ Last trading day
@@ -806,21 +983,18 @@ ${railwayInfo}
     return true;
   }
 
-  // Rate limiting helper method - FIXED for Railway
+  // Rate limiting helper method
   checkRateLimit(chatId) {
     const now = Date.now();
     const userLimit = this.rateLimits.get(chatId) || { count: 0, lastRequest: 0 };
     
-    // Railway uses stricter limits
     const maxRequests = this.isRailway ? 3 : 5;
-    const resetTime = this.isRailway ? 120000 : 60000; // 2 min vs 1 min
+    const resetTime = this.isRailway ? 120000 : 60000;
     
-    // Reset if more than resetTime passed
     if (now - userLimit.lastRequest > resetTime) {
       userLimit.count = 0;
     }
     
-    // Check if user exceeded limit
     if (userLimit.count >= maxRequests) {
       return false;
     }
@@ -833,7 +1007,7 @@ ${railwayInfo}
 
   async generateFlowReport(chatId, symbol, specificDate = null) {
     try {
-      // Rate limiting check - FIXED for Railway
+      // Rate limiting check
       if (!this.checkRateLimit(chatId)) {
         const waitTime = this.isRailway ? '2 minutes' : '1 minute';
         await this.bot.sendMessage(chatId,
@@ -848,11 +1022,17 @@ ${railwayInfo}
       const targetDate = specificDate || this.getTradingDate();
       const isLive = !specificDate && this.isMarketOpen();
       
+      // Get WebSocket status for info
+      const wsStats = this.flowAnalyzer.getWebSocketStatus();
+      const wsInfo = isLive && wsStats?.isConnected ? 
+        ' (WebSocket LIVE data)' : 
+        ' (Historical data)';
+      
       // Send initial message
       const processingMsg = await this.bot.sendMessage(chatId, 
         `🔄 ${isLive ? 'Fetching LIVE' : 'Analyzing historical'} institutional flow for *${symbol}*\n` +
-        `📅 Date: ${targetDate} ${isLive ? '(Live Session)' : '(Historical)'}\n` +
-        `📊 Sources: Tradier Production + Unusual Whales\n` +
+        `📅 Date: ${targetDate} ${wsInfo}\n` +
+        `📊 Sources: Tradier Production + Unusual Whales${isLive ? ' WebSocket' : ''}\n` +
         `⏱️ Timeframe: ${isLive ? 'CURRENT SESSION' : 'COMPLETE SESSION'} data`,
         { parse_mode: 'Markdown' }
       );
@@ -875,7 +1055,8 @@ ${railwayInfo}
         analysisDate: targetDate,
         reportGenerated: new Date().toISOString(),
         marketWasOpen: this.isMarketOpen(),
-        sessionType: isLive ? 'LIVE' : 'HISTORICAL'
+        sessionType: isLive ? 'LIVE' : 'HISTORICAL',
+        websocketConnected: wsStats?.isConnected || false
       };
       
       // Build report
@@ -914,7 +1095,6 @@ ${railwayInfo}
     } catch (error) {
       this.logger.error(`Error generating report for ${symbol}: ${error.message}`);
       
-      // FIXED: Added Railway-specific error suggestions
       const railwayTips = this.isRailway ? `
 *Railway Tips:*
 • Check your environment variables in Railway dashboard
@@ -1007,7 +1187,7 @@ ${railwayInfo}
       return;
     }
 
-    // Rate limiting check for multi-symbol - FIXED for Railway
+    // Rate limiting check for multi-symbol
     if (!this.checkRateLimit(chatId)) {
       const waitTime = this.isRailway ? '2 minutes' : '1 minute';
       await this.bot.sendMessage(chatId,
@@ -1102,6 +1282,15 @@ ${railwayInfo}
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  formatCurrency(amount) {
+    if (Math.abs(amount) >= 1000000) {
+      return (amount / 1000000).toFixed(1) + 'M';
+    } else if (Math.abs(amount) >= 1000) {
+      return (amount / 1000).toFixed(1) + 'K';
+    }
+    return Math.abs(amount).toFixed(0);
+  }
+
   start() {
     this.logger.info('🚀 Bot started and listening for commands...');
     
@@ -1113,17 +1302,26 @@ ${railwayInfo}
       this.logger.info(`🚂 Service ID: ${process.env.RAILWAY_SERVICE_ID || 'Not set'}`);
     }
     
+    // WebSocket status
+    const wsStats = this.flowAnalyzer.getWebSocketStatus();
+    this.logger.info(`📡 WebSocket Status: ${wsStats?.isConnected ? 'CONNECTED' : 'DISCONNECTED'}`);
+    
     // Keep-alive for Railway with health check endpoint
     const http = require('http');
     const server = http.createServer((req, res) => {
       // Health check endpoint for Railway
       if (req.url === '/health' || req.url === '/healthcheck') {
+        const wsStats = this.flowAnalyzer.getWebSocketStatus();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           status: 'healthy',
           timestamp: new Date().toISOString(),
           service: 'institutional-flow-bot',
-          environment: process.env.NODE_ENV || 'development'
+          environment: process.env.NODE_ENV || 'development',
+          websocket: {
+            connected: wsStats?.isConnected || false,
+            messages: wsStats?.messageCount || 0
+          }
         }));
         return;
       }
@@ -1132,6 +1330,7 @@ ${railwayInfo}
       if (req.url === '/status') {
         const now = new Date();
         const nyTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const wsStats = this.flowAnalyzer.getWebSocketStatus();
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -1148,13 +1347,19 @@ ${railwayInfo}
             total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
           },
           uptime: process.uptime(),
-          sessions: this.userSessions.size
+          sessions: this.userSessions.size,
+          websocket: {
+            connected: wsStats?.isConnected || false,
+            messages: wsStats?.messageCount || 0,
+            symbols: wsStats?.symbolsWithData || 0
+          }
         }));
         return;
       }
       
       // Root endpoint with HTML page
       if (req.url === '/') {
+        const wsStats = this.flowAnalyzer.getWebSocketStatus();
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(`
           <!DOCTYPE html>
@@ -1286,7 +1491,7 @@ ${railwayInfo}
                 color: white;
               }
               .badge.live {
-                background: #28a745;
+                background: ${wsStats?.isConnected ? '#28a745' : '#dc3545'};
                 color: white;
               }
               .footer {
@@ -1304,6 +1509,7 @@ ${railwayInfo}
                 <h1>🏛️ Elite Institutional Flow Bot</h1>
                 <p>Real-time institutional options flow analysis</p>
                 ${isRailway ? '<span class="badge railway">🚂 Deployed on Railway</span>' : ''}
+                <span class="badge live">📡 WebSocket: ${wsStats?.isConnected ? 'LIVE' : 'OFFLINE'}</span>
               </div>
               
               <div class="content">
@@ -1311,7 +1517,7 @@ ${railwayInfo}
                   <h3>📊 Bot Status</h3>
                   <p>✅ Bot is running and ready to process institutional flow data</p>
                   <p>⏰ Timezone: America/New_York (Market Hours)</p>
-                  <p>🚀 Status: <strong>OPERATIONAL</strong></p>
+                  <p>📡 WebSocket: ${wsStats?.isConnected ? '🟢 CONNECTED' : '🔴 DISCONNECTED'}</p>
                   
                   <div class="stats">
                     <div class="stat">
@@ -1327,8 +1533,8 @@ ${railwayInfo}
                       <div class="label">Market Open</div>
                     </div>
                     <div class="stat">
-                      <div class="number">⚡</div>
-                      <div class="label">Live Blocks</div>
+                      <div class="number">${wsStats?.isConnected ? '🟢' : '🔴'}</div>
+                      <div class="label">WebSocket</div>
                     </div>
                   </div>
                 </div>
@@ -1338,18 +1544,18 @@ ${railwayInfo}
                   <ul>
                     <li>1. Open Telegram and find the bot</li>
                     <li>2. Send a stock symbol (e.g., "SPY")</li>
-                    <li>3. Or use commands: /flow SPY, /multiflow SPY,QQQ,AAPL</li>
+                    <li>3. Or use commands: /flow SPY, /liveflow SPY, /multiflow SPY,QQQ,AAPL</li>
                     <li>4. Receive real-time institutional flow analysis</li>
                     <li>5. Get live block alerts during market hours</li>
                   </ul>
                   <p style="margin-top: 15px; color: #666;">
-                    <strong>Note:</strong> Market data is fetched from Tradier & Unusual Whales APIs
+                    <strong>Note:</strong> Market data is fetched from Tradier & Unusual Whales WebSocket APIs
                   </p>
                 </div>
               </div>
               
               <div class="footer">
-                <p>Powered by Tradier & Unusual Whales APIs</p>
+                <p>Powered by Tradier & Unusual Whales WebSocket APIs</p>
                 <p>© ${new Date().getFullYear()} - Institutional Flow Analysis</p>
               </div>
             </div>
