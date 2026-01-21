@@ -11,7 +11,7 @@ class FlowAnalyzer {
     this.tradier = new TradierAPI();
     this.unusualWhales = new UnusualWhalesWebSocket(); // WebSocket version
     this.tierAnalyzer = new TierAnalyzer();
-    this.divergenceDetector = new DivergenceDetector();
+    this.divergenceDetector = new DivergenceDetector(this); // Pass self for WebSocket integration
     this.logger = new Logger('flow-analyzer');
     
     // Initialize WebSocket connection
@@ -25,13 +25,19 @@ class FlowAnalyzer {
     // Log WebSocket status
     this.logger.info('Initialized Unusual Whales WebSocket connection');
     
+    // Set up live data monitoring
+    this.setupLiveDataMonitoring();
+    
     // Monitor WebSocket connection status
     setInterval(() => {
       const stats = this.unusualWhales.getConnectionStats();
       if (stats.isConnected) {
         this.logger.debug(`WebSocket connected for ${stats.symbolsWithData} symbols, ${stats.messageCount} messages`);
+      } else {
+        this.logger.warn('WebSocket disconnected, attempting to reconnect...');
+        this.unusualWhales.reconnect();
       }
-    }, 60000); // Log every minute
+    }, 60000); // Check every minute
     
     // Handle graceful shutdown
     process.on('SIGINT', () => {
@@ -45,6 +51,132 @@ class FlowAnalyzer {
       this.unusualWhales.disconnect();
       process.exit(0);
     });
+  }
+
+  setupLiveDataMonitoring() {
+    // Monitor for live blocks and detect divergences in real-time
+    this.unusualWhales.on('block', (block) => {
+      this.handleNewBlock(block);
+    });
+    
+    this.unusualWhales.on('flow', (flow) => {
+      this.handleNewFlow(flow);
+    });
+    
+    this.unusualWhales.on('connected', () => {
+      this.logger.info('WebSocket connected successfully');
+      // Start live monitoring for active symbols
+      this.startLiveMonitoring();
+    });
+    
+    this.unusualWhales.on('disconnected', () => {
+      this.logger.warn('WebSocket disconnected');
+    });
+  }
+
+  handleNewBlock(block) {
+    try {
+      if (!block.symbol || !block.notional || block.notional < 100000) {
+        return; // Ignore small blocks
+      }
+      
+      this.logger.info(`New block detected: ${block.symbol} ${block.strike}${block.option_type === 'CALL' ? 'C' : 'P'} $${this.formatNumber(block.notional)}`);
+      
+      // Get current price for divergence detection
+      this.tradier.getQuote(block.symbol)
+        .then(quote => {
+          // Detect live divergences
+          const divergences = this.divergenceDetector.detectLiveDivergences(
+            block.symbol,
+            [block],
+            quote.price || 100,
+            2 // Last 2 minutes
+          );
+          
+          if (divergences.length > 0) {
+            this.logger.warn(`Live divergence detected for ${block.symbol}: ${divergences[0].type} (${divergences[0].confidence}% confidence)`);
+            // Could trigger alerts here
+          }
+        })
+        .catch(error => {
+          this.logger.error(`Error processing new block: ${error.message}`);
+        });
+        
+    } catch (error) {
+      this.logger.error(`Error in handleNewBlock: ${error.message}`);
+    }
+  }
+
+  handleNewFlow(flow) {
+    // Process flow updates
+    // This could trigger additional analysis or alerts
+    // For now, just log significant flows
+    if (flow.notional > 500000) {
+      this.logger.debug(`Significant flow: ${flow.symbol} ${flow.option_type} $${this.formatNumber(flow.notional)}`);
+    }
+  }
+
+  startLiveMonitoring() {
+    // Start periodic live divergence checks for active symbols
+    setInterval(() => {
+      this.performLiveDivergenceChecks();
+    }, 30000); // Check every 30 seconds
+  }
+
+  async performLiveDivergenceChecks() {
+    try {
+      const stats = this.unusualWhales.getConnectionStats();
+      if (!stats.isConnected || stats.symbolsWithData === 0) {
+        return;
+      }
+      
+      // Get active symbols with recent data
+      const activeSymbols = await this.unusualWhales.getActiveSymbols();
+      
+      // Check each active symbol for live divergences
+      for (const symbol of activeSymbols.slice(0, 10)) { // Limit to 10 symbols
+        try {
+          await this.checkSymbolLiveDivergences(symbol);
+          await this.delay(1000); // Delay between symbols to avoid rate limits
+        } catch (error) {
+          this.logger.error(`Error checking live divergences for ${symbol}: ${error.message}`);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error in live divergence checks: ${error.message}`);
+    }
+  }
+
+  async checkSymbolLiveDivergences(symbol) {
+    try {
+      // Get live blocks from last 5 minutes
+      const liveBlocks = await this.unusualWhales.getLiveBlocks(symbol, 5);
+      
+      if (liveBlocks.length === 0) {
+        return;
+      }
+      
+      // Get current quote
+      const quote = await this.tradier.getQuote(symbol).catch(() => ({ price: 100 }));
+      
+      // Detect live divergences
+      const liveDivergences = this.divergenceDetector.detectLiveDivergences(
+        symbol,
+        liveBlocks,
+        quote.price || 100,
+        5
+      );
+      
+      // Log significant divergences
+      liveDivergences.forEach(divergence => {
+        if (divergence.confidence > 70) {
+          this.logger.warn(`High-confidence live divergence for ${symbol}: ${divergence.type} - ${divergence.explanation}`);
+        }
+      });
+      
+    } catch (error) {
+      throw error;
+    }
   }
 
   async analyzeSymbolFlow(symbol, date = null) {
@@ -79,6 +211,25 @@ class FlowAnalyzer {
           return [];
         })
       ]);
+
+      // NEW: Get live divergences if it's a live analysis
+      let liveDivergences = [];
+      if (isLiveAnalysis) {
+        try {
+          const liveBlocks = await this.unusualWhales.getLiveBlocks(symbol, 10);
+          if (liveBlocks.length > 0) {
+            liveDivergences = this.divergenceDetector.detectLiveDivergences(
+              symbol,
+              liveBlocks,
+              quote.price || 100,
+              10
+            );
+            this.logger.info(`Detected ${liveDivergences.length} live divergences for ${symbol}`);
+          }
+        } catch (liveError) {
+          this.logger.warn(`Could not get live divergences: ${liveError.message}`);
+        }
+      }
 
       if (flowData.length === 0) {
         // Try to get live blocks if no historical data
@@ -123,9 +274,11 @@ class FlowAnalyzer {
         complexAnalysis,
         deltaAnalysis,
         divergences,
+        liveDivergences, // NEW: Add live divergences
         institutionalLevels,
         totals,
         blocks: blocks.slice(0, 5), // Top 5 blocks
+        liveBlocks: isLiveAnalysis ? await this.unusualWhales.getLiveBlocks(symbol, 10).catch(() => []) : [], // NEW: Live blocks
         config: {
           timezone: process.env.TIMEZONE || 'America/New_York',
           atmRange: process.env.ATM_RANGE || 0.02,
@@ -687,36 +840,150 @@ class FlowAnalyzer {
     return 'Stock-Option Combo';
   }
 
-  // NEW: Get real-time WebSocket status
+  // NEW: Enhanced WebSocket status with divergence info
   getWebSocketStatus() {
-    return this.unusualWhales.getConnectionStats();
+    const baseStats = this.unusualWhales.getConnectionStats();
+    
+    // Add divergence detection info
+    const divergenceStatus = {
+      liveDivergences: Array.from(this.divergenceDetector.liveDivergences.keys()).length,
+      activeSymbols: this.divergenceDetector.liveDivergences.size,
+      lastDivergence: this.getLastDivergenceTime()
+    };
+    
+    return {
+      ...baseStats,
+      divergenceDetection: divergenceStatus
+    };
   }
 
-  // NEW: Get live flow data (real-time)
+  getLastDivergenceTime() {
+    const divergences = this.divergenceDetector.liveDivergences;
+    if (divergences.size === 0) return null;
+    
+    let latest = null;
+    divergences.forEach((div, symbol) => {
+      if (!latest || div.timestamp > latest.timestamp) {
+        latest = { symbol, ...div };
+      }
+    });
+    
+    return latest ? {
+      symbol: latest.symbol,
+      type: latest.type,
+      timestamp: latest.timestamp,
+      confidence: latest.confidence
+    } : null;
+  }
+
+  // NEW: Enhanced live flow method with divergences
   async getLiveFlow(symbol, minutesBack = 10) {
     try {
       const liveBlocks = await this.unusualWhales.getLiveBlocks(symbol, minutesBack);
       const quote = await this.tradier.getQuote(symbol).catch(() => ({ price: 100 }));
       
+      // Get live divergences
+      const liveDivergences = this.divergenceDetector.detectLiveDivergences(
+        symbol,
+        liveBlocks,
+        quote.price || 100,
+        minutesBack
+      );
+      
+      // Get live divergence status
+      const divergenceStatus = this.divergenceDetector.getLiveDivergenceStatus(symbol);
+      
       return {
         symbol,
         liveBlocks,
+        liveDivergences,
+        divergenceStatus,
         count: liveBlocks.length,
         totalNotional: liveBlocks.reduce((sum, block) => sum + (block.notional || 0), 0),
         spotPrice: quote.price || 100,
-        timestamp: new Date()
+        timestamp: new Date(),
+        hasHighConfidenceDivergence: liveDivergences.some(d => d.confidence > 70)
       };
     } catch (error) {
       this.logger.error(`Error getting live flow for ${symbol}: ${error.message}`);
       return {
         symbol,
         liveBlocks: [],
+        liveDivergences: [],
+        divergenceStatus: { hasLiveDivergence: false },
         count: 0,
         totalNotional: 0,
         spotPrice: 100,
-        timestamp: new Date()
+        timestamp: new Date(),
+        hasHighConfidenceDivergence: false
       };
     }
+  }
+
+  // NEW: Get active symbols with recent WebSocket data
+  async getActiveSymbols() {
+    try {
+      const stats = this.unusualWhales.getConnectionStats();
+      if (!stats.isConnected) {
+        return [];
+      }
+      
+      // Get symbols with recent data from WebSocket
+      return await this.unusualWhales.getActiveSymbols();
+    } catch (error) {
+      this.logger.error(`Error getting active symbols: ${error.message}`);
+      return [];
+    }
+  }
+
+  // NEW: Trigger live divergence alert
+  triggerLiveDivergenceAlert(symbol, divergence) {
+    // This could be extended to send notifications
+    this.logger.warn(`🚨 LIVE DIVERGENCE ALERT: ${symbol} - ${divergence.type} (${divergence.confidence}%)`);
+    this.logger.warn(`   ${divergence.explanation}`);
+    this.logger.warn(`   Guidance: ${divergence.guidance}`);
+    
+    // Could trigger Telegram notifications here
+    // this.telegramBot.sendAlert(symbol, divergence);
+  }
+
+  // NEW: Get live analysis summary
+  async getLiveAnalysisSummary(symbol) {
+    try {
+      const liveFlow = await this.getLiveFlow(symbol, 5);
+      const quote = await this.tradier.getQuote(symbol).catch(() => ({ price: 100 }));
+      
+      const summary = {
+        symbol,
+        timestamp: new Date(),
+        spotPrice: quote.price || 100,
+        blockCount: liveFlow.count,
+        totalNotional: liveFlow.totalNotional,
+        liveDivergences: liveFlow.liveDivergences,
+        hasAlerts: liveFlow.hasHighConfidenceDivergence,
+        activeWebSocket: this.unusualWhales.getConnectionStats().isConnected,
+        marketOpen: this.isMarketOpen()
+      };
+      
+      return summary;
+    } catch (error) {
+      this.logger.error(`Error getting live analysis summary for ${symbol}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // Helper methods
+  formatNumber(num) {
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(2) + 'M';
+    } else if (num >= 1000) {
+      return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toFixed(0);
+  }
+
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
