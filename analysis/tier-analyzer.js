@@ -5,15 +5,26 @@ class TierAnalyzer {
   constructor() {
     this.rules = config.rules;
     this.logger = new Logger('tier-analyzer');
+    
+    // Live data tracking
+    this.liveFlowTracker = new Map(); // symbol -> { timestamp: Date, flowData: [], spotPrice: number }
+    this.liveSignalHistory = new Map(); // symbol -> array of recent signals
   }
 
-  analyzeTiers(flowData, spotPrice, isLiveData = false) {
-    // Add WebSocket/live data context
+  analyzeTiers(flowData, spotPrice, isLiveData = false, symbol = null) {
+    // Add WebSocket/live data context with symbol tracking
     this.currentContext = {
       isLiveData,
       analysisTime: new Date(),
-      hasRecentFlow: this.hasRecentFlow(flowData, isLiveData)
+      symbol,
+      hasRecentFlow: this.hasRecentFlow(flowData, isLiveData),
+      spotPrice
     };
+
+    // Track live data for divergence analysis
+    if (isLiveData && symbol) {
+      this.trackLiveFlow(symbol, flowData, spotPrice);
+    }
 
     // STRICT RULE: No DTE mixing
     const tier1Flow = this.filterTier(flowData, 'tier1');
@@ -22,26 +33,103 @@ class TierAnalyzer {
     // Validate no overlap
     this.validateNoOverlap(tier1Flow, tier2Flow);
     
-    const tier1Analysis = this.analyzeTierData(tier1Flow, 'TIER-1 (Urgent | 0-3 DTE)', spotPrice, isLiveData);
-    const tier2Analysis = this.analyzeTierData(tier2Flow, 'TIER-2 (Patient | 3-14 DTE)', spotPrice, isLiveData);
+    const tier1Analysis = this.analyzeTierData(tier1Flow, 'TIER-1 (Urgent | 0-3 DTE)', spotPrice, isLiveData, symbol);
+    const tier2Analysis = this.analyzeTierData(tier2Flow, 'TIER-2 (Patient | 3-14 DTE)', spotPrice, isLiveData, symbol);
     
     // Apply hierarchy rules with WebSocket context
-    const hierarchy = this.applyHierarchyRules(tier1Analysis, tier2Analysis, flowData, spotPrice, isLiveData);
+    const hierarchy = this.applyHierarchyRules(tier1Analysis, tier2Analysis, flowData, spotPrice, isLiveData, symbol);
+    
+    // Detect live signal changes
+    const signalChange = isLiveData && symbol ? 
+      this.detectLiveSignalChange(symbol, tier1Analysis, hierarchy) : null;
     
     return {
       tier1: tier1Analysis,
       tier2: tier2Analysis,
       hierarchy: hierarchy,
-      decision: this.makeTierDecision(tier1Analysis, tier2Analysis, hierarchy),
-      context: this.currentContext
+      decision: this.makeTierDecision(tier1Analysis, tier2Analysis, hierarchy, signalChange),
+      context: this.currentContext,
+      liveSignalChange: signalChange,
+      isLiveData
     };
+  }
+
+  trackLiveFlow(symbol, flowData, spotPrice) {
+    const now = new Date();
+    
+    if (!this.liveFlowTracker.has(symbol)) {
+      this.liveFlowTracker.set(symbol, []);
+    }
+    
+    const flowHistory = this.liveFlowTracker.get(symbol);
+    
+    // Add current flow snapshot
+    flowHistory.push({
+      timestamp: now,
+      flowData: [...flowData], // Copy to avoid reference issues
+      spotPrice,
+      tier1Count: this.filterTier(flowData, 'tier1').length,
+      tier2Count: this.filterTier(flowData, 'tier2').length
+    });
+    
+    // Keep only last 20 snapshots (approx 10 minutes if called every 30 seconds)
+    if (flowHistory.length > 20) {
+      flowHistory.shift();
+    }
+  }
+
+  detectLiveSignalChange(symbol, tier1Analysis, hierarchy) {
+    const now = new Date();
+    const recentThreshold = 5 * 60 * 1000; // 5 minutes
+    
+    if (!this.liveSignalHistory.has(symbol)) {
+      this.liveSignalHistory.set(symbol, []);
+    }
+    
+    const signalHistory = this.liveSignalHistory.get(symbol);
+    const currentSignal = {
+      timestamp: now,
+      direction: tier1Analysis.directionalSignal,
+      hasClearSignal: tier1Analysis.hasClearSignal,
+      followTier1: hierarchy.followTier1,
+      tier1Dominant: hierarchy.tier1Dominant
+    };
+    
+    signalHistory.push(currentSignal);
+    
+    // Keep only last 10 signals
+    if (signalHistory.length > 10) {
+      signalHistory.shift();
+    }
+    
+    // Check for signal changes
+    if (signalHistory.length >= 3) {
+      const recentSignals = signalHistory.slice(-3);
+      const uniqueDirections = new Set(recentSignals.map(s => s.direction));
+      const signalChanges = recentSignals.filter((signal, index, array) => 
+        index > 0 && signal.direction !== array[index - 1].direction
+      ).length;
+      
+      return {
+        hasSignalChange: signalChanges > 0,
+        signalChanges,
+        recentDirection: currentSignal.direction,
+        previousDirection: signalHistory.length > 1 ? signalHistory[signalHistory.length - 2].direction : null,
+        timeSinceLastChange: signalChanges > 0 ? 
+          (now - recentSignals[recentSignals.length - 2].timestamp) / 1000 : null,
+        signalStability: signalHistory.length >= 5 ? 
+          (signalHistory.filter(s => s.direction === currentSignal.direction).length / signalHistory.length) * 100 : 0
+      };
+    }
+    
+    return null;
   }
 
   hasRecentFlow(flowData, isLiveData) {
     if (!isLiveData || !flowData || flowData.length === 0) return false;
     
     const now = new Date();
-    const recentThreshold = 5 * 60 * 1000; // 5 minutes
+    const recentThreshold = 2 * 60 * 1000; // Reduced to 2 minutes for live data
     
     return flowData.some(flow => {
       const flowTime = new Date(flow.timestamp || flow.timestamp_original || now);
@@ -113,8 +201,10 @@ class TierAnalyzer {
     }
   }
 
-  analyzeTierData(tierFlow, tierLabel, spotPrice, isLiveData) {
+  analyzeTierData(tierFlow, tierLabel, spotPrice, isLiveData, symbol = null) {
     if (tierFlow.length === 0) {
+      const liveIndicator = isLiveData ? '🔴 LIVE: ' : '';
+      
       return {
         label: tierLabel,
         calls: { notional: 0, prints: 0, realDelta: 0, avgDte: 0, avgSize: 0 },
@@ -122,7 +212,7 @@ class TierAnalyzer {
         ratio: { notional: 'N/A', realDelta: 'N/A' },
         netExposure: 0,
         directionalSignal: 'NEUTRAL',
-        takeaway: 'No institutional flow detected',
+        takeaway: isLiveData ? `${liveIndicator}No live flow detected` : 'No institutional flow detected',
         hasClearSignal: false,
         isDominant: false,
         atmImbalance: false,
@@ -130,7 +220,9 @@ class TierAnalyzer {
         aggressiveExecution: false,
         nearSpot: false,
         isLiveData: isLiveData,
-        flowAge: this.getFlowAge(tierFlow)
+        flowAge: this.getFlowAge(tierFlow),
+        symbol: symbol,
+        lastUpdate: new Date()
       };
     }
 
@@ -231,6 +323,11 @@ class TierAnalyzer {
                       (signalStrength >= 60);
     }
 
+    // Enhanced for live data
+    const liveBonus = isLiveData ? 5 : 0;
+    const clearSignalBonus = hasClearSignal ? 10 : 0;
+    const signalConfidence = Math.min(signalStrength + liveBonus + clearSignalBonus, 95);
+
     return {
       label: tierLabel,
       calls: {
@@ -238,14 +335,22 @@ class TierAnalyzer {
         prints: callPrints,
         realDelta: callRealDelta,
         avgDte: callAvgDte.toFixed(1),
-        avgSize: callAvgSize
+        avgSize: callAvgSize,
+        recentPrints: isLiveData ? calls.filter(c => {
+          const flowTime = new Date(c.timestamp || new Date());
+          return (new Date() - flowTime) <= 300000; // Last 5 minutes
+        }).length : 0
       },
       puts: {
         notional: putNotional,
         prints: putPrints,
         realDelta: putRealDelta,
         avgDte: putAvgDte.toFixed(1),
-        avgSize: putAvgSize
+        avgSize: putAvgSize,
+        recentPrints: isLiveData ? puts.filter(p => {
+          const flowTime = new Date(p.timestamp || new Date());
+          return (new Date() - flowTime) <= 300000; // Last 5 minutes
+        }).length : 0
       },
       ratio: {
         notional: notionalRatio,
@@ -256,6 +361,7 @@ class TierAnalyzer {
       netExposure,
       directionalSignal,
       signalStrength: signalStrength.toFixed(1),
+      signalConfidence: signalConfidence.toFixed(0),
       hasClearSignal,
       atmImbalance,
       repeatStrikes,
@@ -264,7 +370,10 @@ class TierAnalyzer {
       totalFlow,
       isLiveData,
       flowAge: this.getFlowAge(tierFlow),
-      takeaway: this.generateTierTakeaway(callNotional, putNotional, callRealDelta, putRealDelta, tierLabel, directionalSignal, isLiveData)
+      symbol: symbol,
+      lastUpdate: new Date(),
+      takeaway: this.generateTierTakeaway(callNotional, putNotional, callRealDelta, putRealDelta, 
+                                         tierLabel, directionalSignal, isLiveData, hasClearSignal)
     };
   }
 
@@ -284,14 +393,18 @@ class TierAnalyzer {
     const ageMinutes = (now - new Date(newest)) / (1000 * 60);
     const rangeMinutes = (new Date(newest) - new Date(oldest)) / (1000 * 60);
     
+    const recentThreshold = 5; // 5 minutes for "recent"
+    
     return {
       newest: ageMinutes.toFixed(0) + ' minutes ago',
       range: rangeMinutes.toFixed(0) + ' minutes',
-      isRecent: ageMinutes <= 10
+      isRecent: ageMinutes <= recentThreshold,
+      oldestFlow: new Date(oldest),
+      newestFlow: new Date(newest)
     };
   }
 
-  applyHierarchyRules(tier1, tier2, allFlowData, spotPrice, isLiveData) {
+  applyHierarchyRules(tier1, tier2, allFlowData, spotPrice, isLiveData, symbol = null) {
     // 🚨 TIER-1 IS PRIMARY AND OVERRIDES ALL OTHER SIGNALS
     const hierarchy = {
       primaryDirection: tier1.directionalSignal,
@@ -301,8 +414,14 @@ class TierAnalyzer {
       confidenceAdjustment: 0,
       conflictDetected: false,
       interpretation: '',
-      isLiveData: isLiveData
+      isLiveData: isLiveData,
+      symbol: symbol,
+      analysisTime: new Date()
     };
+
+    // Enhanced live data checks
+    const liveDataBonus = isLiveData ? 10 : 0;
+    const recentFlowBonus = (tier1.flowAge?.isRecent && isLiveData) ? 15 : 0;
 
     // Check if Tier-1 produces clear directional signal
     if (tier1.hasClearSignal) {
@@ -339,9 +458,14 @@ class TierAnalyzer {
         followConditions.push('Near spot clustering');
       }
       
-      // 6) For live data: recent flow detection
-      if (isLiveData && tier1.flowAge?.isRecent) {
-        followConditions.push('Recent live flow');
+      // 6) Enhanced for WebSocket data
+      if (isLiveData) {
+        if (tier1.flowAge?.isRecent) {
+          followConditions.push('Recent live flow');
+        }
+        if (tier1.calls.recentPrints > 0 || tier1.puts.recentPrints > 0) {
+          followConditions.push('Live prints detected');
+        }
       }
       
       hierarchy.followConditions = followConditions;
@@ -349,7 +473,7 @@ class TierAnalyzer {
       // When ANY condition met → FOLLOW Tier-1
       if (followConditions.length > 0) {
         hierarchy.followTier1 = true;
-        const followType = isLiveData ? 'LIVE' : 'HISTORICAL';
+        const followType = isLiveData ? '🔴 LIVE' : '📊 HISTORICAL';
         hierarchy.interpretation = `${followType} Tier-1 direction MUST be followed: ${followConditions.join(', ')}`;
       }
     }
@@ -369,7 +493,7 @@ class TierAnalyzer {
     }
 
     // Confidence adjustment based on alignment and data freshness
-    let confidenceAdjustment = 0;
+    let confidenceAdjustment = liveDataBonus + recentFlowBonus;
     
     if (tier1.directionalSignal === tier2.directionalSignal) {
       confidenceAdjustment += 15; // Increase confidence
@@ -377,90 +501,103 @@ class TierAnalyzer {
       confidenceAdjustment -= 10; // Reduce confidence
     }
     
-    // Additional confidence for live data
-    if (isLiveData && tier1.flowAge?.isRecent) {
-      confidenceAdjustment += 5;
-    }
-    
     hierarchy.confidenceAdjustment = confidenceAdjustment;
 
     return hierarchy;
   }
 
-  makeTierDecision(tier1, tier2, hierarchy) {
+  makeTierDecision(tier1, tier2, hierarchy, signalChange = null) {
     const decision = {
       direction: 'NEUTRAL',
       urgency: 'NONE',
       confidence: 50,
       narrative: '',
       guidance: '',
-      dataContext: hierarchy.isLiveData ? 'LIVE' : 'HISTORICAL'
+      dataContext: hierarchy.isLiveData ? '🔴 LIVE' : '📊 HISTORICAL',
+      signalChange: signalChange,
+      timestamp: new Date()
     };
 
+    // Base confidence adjustments
+    let confidenceAdjustment = hierarchy.confidenceAdjustment;
+    
     // 🚨 TIER-1 IS PRIMARY DECISION ENGINE
     if (tier1.hasClearSignal && hierarchy.followTier1) {
       decision.direction = tier1.directionalSignal;
       decision.urgency = 'HIGH';
-      decision.confidence = Math.min(70 + hierarchy.confidenceAdjustment, 90);
+      decision.confidence = Math.min(70 + confidenceAdjustment, 95);
       decision.narrative = `Urgent ${tier1.directionalSignal.toLowerCase()} flow dominates — institutional positioning for immediate move.`;
       
       if (tier1.directionalSignal === 'BULLISH') {
         decision.guidance = hierarchy.isLiveData 
-          ? 'FOLLOW LIVE Tier-1 direction: Immediate bullish positioning' 
-          : 'FOLLOW Tier-1 direction: Bullish positioning for near-term upside';
+          ? '🚨 FOLLOW LIVE Tier-1 direction: Immediate bullish positioning' 
+          : '🚨 FOLLOW Tier-1 direction: Bullish positioning for near-term upside';
       } else if (tier1.directionalSignal === 'BEARISH') {
         decision.guidance = hierarchy.isLiveData 
-          ? 'FOLLOW LIVE Tier-1 direction: Immediate defensive hedging' 
-          : 'FOLLOW Tier-1 direction: Bearish hedging for near-term protection';
+          ? '🚨 FOLLOW LIVE Tier-1 direction: Immediate defensive hedging' 
+          : '🚨 FOLLOW Tier-1 direction: Bearish hedging for near-term protection';
+      }
+      
+      // Add signal change context if available
+      if (signalChange && signalChange.hasSignalChange) {
+        decision.narrative += ` Signal changed from ${signalChange.previousDirection} to ${signalChange.recentDirection}.`;
+        decision.confidence += 5; // Signal changes increase confidence in direction
       }
     }
     // If Tier-1 not clear, use Tier-2 for context only
     else if (tier2.directionalSignal !== 'NEUTRAL') {
       decision.direction = tier2.directionalSignal;
       decision.urgency = 'LOW';
-      decision.confidence = Math.min(50 + hierarchy.confidenceAdjustment, 65);
+      decision.confidence = Math.min(50 + confidenceAdjustment, 65);
       decision.narrative = hierarchy.isLiveData 
-        ? `Background ${tier2.directionalSignal.toLowerCase()} conviction — no urgent live signals detected.`
-        : `Patient ${tier2.directionalSignal.toLowerCase()} flow provides background conviction — no urgent signals detected.`;
-      decision.guidance = 'MONITOR for Tier-1 confirmation before taking directional position';
+        ? `🔴 LIVE: Background ${tier2.directionalSignal.toLowerCase()} conviction — no urgent live signals detected.`
+        : `📊 HISTORICAL: Patient ${tier2.directionalSignal.toLowerCase()} flow provides background conviction — no urgent signals detected.`;
+      decision.guidance = '⏳ MONITOR for Tier-1 confirmation before taking directional position';
     }
 
     // Add conflict context if present
     if (hierarchy.conflictDetected) {
       decision.narrative += ` ${hierarchy.interpretation}`;
-      decision.guidance = 'FOLLOW Tier-1 direction despite Tier-2 conflict';
+      decision.guidance = '⚠️ FOLLOW Tier-1 direction despite Tier-2 conflict';
     }
 
     // Add WebSocket context
     if (hierarchy.isLiveData) {
-      decision.narrative += ' [LIVE DATA]';
       if (tier1.flowAge?.isRecent) {
         decision.confidence += 5;
         decision.narrative += ' (Recent flow detected)';
       }
+      
+      // Add live tracking info
+      decision.liveContext = {
+        flowAge: tier1.flowAge,
+        recentPrints: tier1.calls.recentPrints + tier1.puts.recentPrints,
+        signalStability: signalChange?.signalStability || 0
+      };
     }
 
     return decision;
   }
 
-  generateTierTakeaway(callNotional, putNotional, callDelta, putDelta, tierLabel, direction, isLiveData) {
+  generateTierTakeaway(callNotional, putNotional, callDelta, putDelta, tierLabel, direction, isLiveData, hasClearSignal) {
     const total = callNotional + Math.abs(putNotional);
-    if (total === 0) return isLiveData ? 'No live flow detected' : 'No flow detected';
+    if (total === 0) return isLiveData ? '🔴 LIVE: No live flow detected' : '📊 No flow detected';
     
     const callPercent = (callNotional / total * 100).toFixed(1);
     const putPercent = (Math.abs(putNotional) / total * 100).toFixed(1);
     
     const netDelta = callDelta + putDelta;
     
-    const livePrefix = isLiveData ? '🔴 LIVE: ' : '';
+    const livePrefix = isLiveData ? '🔴 LIVE: ' : '📊 ';
+    const clearSignalIndicator = hasClearSignal ? '🚨 ' : '';
     
     if (tierLabel.includes('TIER-1')) {
       if (direction === 'BULLISH') {
-        return `${livePrefix}🚨 URGENT: ${callPercent}% call-heavy speculation (Tier-1 PRIMARY direction)`;
+        return `${livePrefix}${clearSignalIndicator}URGENT: ${callPercent}% call-heavy speculation (Tier-1 PRIMARY direction)`;
       } else if (direction === 'BEARISH') {
-        return `${livePrefix}🚨 URGENT: ${putPercent}% put-heavy hedging (Tier-1 PRIMARY direction)`;
+        return `${livePrefix}${clearSignalIndicator}URGENT: ${putPercent}% put-heavy hedging (Tier-1 PRIMARY direction)`;
       } else {
-        return `${livePrefix}🚨 URGENT: Mixed flow (${callPercent}% calls, ${putPercent}% puts) - no clear signal`;
+        return `${livePrefix}${clearSignalIndicator}URGENT: Mixed flow (${callPercent}% calls, ${putPercent}% puts) - no clear signal`;
       }
     } else {
       if (direction === 'BULLISH') {
@@ -471,6 +608,54 @@ class TierAnalyzer {
         return `${livePrefix}🐘 PATIENT: Balanced institutional positioning`;
       }
     }
+  }
+
+  // NEW: Get live tier analysis summary
+  getLiveTierSummary(symbol) {
+    if (!this.liveFlowTracker.has(symbol)) {
+      return null;
+    }
+    
+    const flowHistory = this.liveFlowTracker.get(symbol);
+    if (flowHistory.length === 0) {
+      return null;
+    }
+    
+    const latest = flowHistory[flowHistory.length - 1];
+    const recent = flowHistory.slice(-5); // Last 5 snapshots
+    
+    const tier1Counts = recent.map(f => f.tier1Count);
+    const tier2Counts = recent.map(f => f.tier2Count);
+    
+    return {
+      symbol,
+      latestUpdate: latest.timestamp,
+      tier1FlowCount: latest.tier1Count,
+      tier2FlowCount: latest.tier2Count,
+      tier1Trend: this.calculateTrend(tier1Counts),
+      tier2Trend: this.calculateTrend(tier2Counts),
+      averageTier1Count: this.calculateAverage(tier1Counts),
+      averageTier2Count: this.calculateAverage(tier2Counts),
+      historySize: flowHistory.length,
+      analysisPeriod: flowHistory.length > 0 ? 
+        (latest.timestamp - flowHistory[0].timestamp) / (1000 * 60) + ' minutes' : 'N/A'
+    };
+  }
+
+  calculateTrend(counts) {
+    if (counts.length < 2) return 'N/A';
+    
+    const first = counts[0];
+    const last = counts[counts.length - 1];
+    
+    if (last > first * 1.2) return '↗️ Increasing';
+    if (last < first * 0.8) return '↘️ Decreasing';
+    return '➡️ Stable';
+  }
+
+  calculateAverage(counts) {
+    if (counts.length === 0) return 0;
+    return counts.reduce((sum, count) => sum + count, 0) / counts.length;
   }
 }
 
