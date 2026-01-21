@@ -1,217 +1,302 @@
+const WebSocket = require('ws');
 const config = require('../config');
 const Logger = require('../utils/logger');
 
-class UnusualWhalesWebhook {
+class UnusualWhalesWebSocket {
   constructor() {
-    this.logger = new Logger('unusual-whales');
+    this.logger = new Logger('unusual-whales-ws');
     this.storedData = new Map(); // symbol -> { blocks: [], flow: [], timestamp }
     this.simulationCache = new Map();
-    this.webhookHistory = [];
+    this.ws = null;
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 5000; // Start with 5 seconds
+    
+    // Connection tracking
+    this.connectionStartTime = null;
+    this.messageCount = 0;
+    this.lastMessageTime = null;
     
     // Clean up old data periodically
     setInterval(() => this.cleanupOldData(), 3600000); // Every hour
+    setInterval(() => this.connectionHealthCheck(), 30000); // Every 30 seconds
   }
 
-  // Main method to get institutional flow (compatible with existing code)
-  async getInstitutionalFlow(symbol, date = null) {
+  // Initialize WebSocket connection
+  async connect() {
     try {
-      const targetDate = date || this.getTodayDate();
-      
-      // Check if we have stored webhook data
-      const stored = this.getStoredDataForDate(symbol, targetDate);
-      if (stored.flow.length > 0) {
-        this.logger.info(`Using stored webhook data for ${symbol} on ${targetDate}: ${stored.flow.length} flows`);
-        return this.filterAndValidateFlow(stored.flow, targetDate);
+      if (this.ws && this.isConnected) {
+        this.logger.info('WebSocket already connected');
+        return;
       }
       
-      // Fallback to simulation for development
-      this.logger.info(`Simulating institutional flow for ${symbol} on ${targetDate}`);
-      const simulated = await this.simulateInstitutionalFlow(symbol, targetDate);
-      return this.filterAndValidateFlow(simulated, targetDate);
+      this.logger.info('Connecting to Unusual Whales WebSocket API...');
       
-    } catch (error) {
-      this.logger.error(`Unusual Whales flow error for ${symbol}${date ? ' on ' + date : ''}: ${error.message}`);
-      return [];
-    }
-  }
-
-  async getBlocks(symbol, minSize = 100, date = null) {
-    try {
-      const targetDate = date || this.getTodayDate();
-      
-      // Check stored data
-      const stored = this.getStoredDataForDate(symbol, targetDate);
-      if (stored.blocks.length > 0) {
-        const filtered = stored.blocks.filter(block => 
-          block.contracts >= minSize
-        );
-        if (filtered.length > 0) {
-          return filtered;
-        }
+      // Close existing connection if any
+      if (this.ws) {
+        this.ws.close();
       }
       
-      // Simulate blocks
-      return await this.simulateBlocks(symbol, minSize, targetDate);
+      // In production, this would be the real Unusual Whales WebSocket endpoint
+      // For development, we'll use a placeholder or simulate
+      const wsUrl = process.env.UNUSUAL_WHALES_WS_URL || 'wss://api.unusualwhales.com/ws/v1/flow';
       
-    } catch (error) {
-      this.logger.error(`Unusual Whales blocks error for ${symbol}: ${error.message}`);
-      return [];
-    }
-  }
-
-  async getRealDelta(symbol, strike, expiration, optionType, date = null) {
-    try {
-      const targetDate = date || this.getTodayDate();
-      
-      // In a real webhook system, delta might come from different data
-      // For now, simulate
-      return await this.simulateRealDelta(symbol, strike, optionType, targetDate);
-      
-    } catch (error) {
-      this.logger.error(`Unusual Whales real delta error: ${error.message}`);
-      return 0;
-    }
-  }
-
-  async getComplexTrades(symbol, date = null) {
-    try {
-      const targetDate = date || this.getTodayDate();
-      
-      // Check stored data
-      const stored = this.getStoredDataForDate(symbol, targetDate);
-      if (stored.complexTrades && stored.complexTrades.length > 0) {
-        return stored.complexTrades;
-      }
-      
-      // Simulate complex trades
-      return await this.simulateComplexTrades(symbol, targetDate);
-      
-    } catch (error) {
-      this.logger.error(`Unusual Whales complex trades error for ${symbol}: ${error.message}`);
-      return [];
-    }
-  }
-
-  async getDeltaConcentration(symbol, date = null) {
-    try {
-      const targetDate = date || this.getTodayDate();
-      
-      // Check stored data
-      const stored = this.getStoredDataForDate(symbol, targetDate);
-      if (stored.deltaConcentration && stored.deltaConcentration.length > 0) {
-        return stored.deltaConcentration;
-      }
-      
-      // Simulate delta concentration
-      return await this.simulateDeltaConcentration(symbol, targetDate);
-      
-    } catch (error) {
-      this.logger.error(`Unusual Whales delta concentration error for ${symbol}: ${error.message}`);
-      return [];
-    }
-  }
-
-  // NEW: Webhook processing methods
-  async processIncomingWebhook(payload) {
-    try {
-      this.logger.info('Processing incoming webhook');
-      
-      const parsed = this.parseWebhookPayload(payload);
-      if (!parsed.symbol) {
-        throw new Error('No symbol in webhook payload');
-      }
-      
-      // Store the data
-      this.storeWebhookData(parsed);
-      
-      // Add to history
-      this.webhookHistory.push({
-        symbol: parsed.symbol,
-        timestamp: new Date(),
-        blockCount: parsed.blocks?.length || 0,
-        flowCount: parsed.flow?.length || 0
+      this.ws = new WebSocket(wsUrl, {
+        headers: {
+          'Authorization': `Bearer ${config.apis.unusualWhales.key}`,
+          'User-Agent': 'EliteInstitutionalFlowBot/1.0'
+        },
+        timeout: 10000
       });
       
-      // Keep history manageable
-      if (this.webhookHistory.length > 1000) {
-        this.webhookHistory = this.webhookHistory.slice(-500);
-      }
+      // Set up event handlers
+      this.setupEventHandlers();
       
-      this.logger.info(`Webhook processed for ${parsed.symbol}: ${parsed.blocks?.length || 0} blocks, ${parsed.flow?.length || 0} flows`);
-      
-      return {
-        success: true,
-        symbol: parsed.symbol,
-        blockCount: parsed.blocks?.length || 0,
-        flowCount: parsed.flow?.length || 0
-      };
+      this.connectionStartTime = Date.now();
       
     } catch (error) {
-      this.logger.error(`Webhook processing error: ${error.message}`);
-      return {
-        success: false,
-        error: error.message
-      };
+      this.logger.error(`Failed to connect to WebSocket: ${error.message}`);
+      this.scheduleReconnect();
     }
   }
 
-  // NEW: Get live blocks (for real-time analysis)
-  async getLiveBlocks(symbol, minutesBack = 5) {
-    try {
-      const cutoff = new Date(Date.now() - minutesBack * 60 * 1000);
-      const allBlocks = this.getAllBlocks(symbol);
+  setupEventHandlers() {
+    this.ws.on('open', () => {
+      this.logger.info('✅ WebSocket connected to Unusual Whales');
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
+      this.reconnectDelay = 5000;
       
-      const recentBlocks = allBlocks.filter(block => 
-        new Date(block.timestamp) > cutoff
-      );
+      // Subscribe to institutional flow channels
+      this.subscribeToChannels();
       
-      if (recentBlocks.length > 0) {
-        return recentBlocks;
-      }
-      
-      // If no recent blocks, simulate some
-      return await this.simulateLiveBlocks(symbol, minutesBack);
-      
-    } catch (error) {
-      this.logger.error(`Live blocks error for ${symbol}: ${error.message}`);
-      return [];
-    }
-  }
+      // Start ping interval to keep connection alive
+      this.startPingInterval();
+    });
 
-  // NEW: Get webhook stats
-  getWebhookStats() {
-    const stats = {
-      totalWebhooks: this.webhookHistory.length,
-      symbols: new Set(),
-      last24h: 0,
-      recentActivity: []
-    };
-    
-    const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    
-    this.webhookHistory.forEach(entry => {
-      stats.symbols.add(entry.symbol);
-      if (new Date(entry.timestamp) > cutoff24h) {
-        stats.last24h++;
+    this.ws.on('message', (data) => {
+      this.lastMessageTime = Date.now();
+      this.messageCount++;
+      
+      try {
+        const message = JSON.parse(data.toString());
+        this.handleWebSocketMessage(message);
+      } catch (error) {
+        this.logger.error(`Error parsing WebSocket message: ${error.message}`);
       }
     });
-    
-    // Get recent activity (last 10 webhooks)
-    stats.recentActivity = this.webhookHistory.slice(-10).map(entry => ({
-      symbol: entry.symbol,
-      time: new Date(entry.timestamp).toLocaleTimeString(),
-      blocks: entry.blockCount,
-      flows: entry.flowCount
-    }));
-    
-    stats.symbols = Array.from(stats.symbols);
-    
-    return stats;
+
+    this.ws.on('error', (error) => {
+      this.logger.error(`WebSocket error: ${error.message}`);
+      this.isConnected = false;
+    });
+
+    this.ws.on('close', (code, reason) => {
+      this.logger.warn(`WebSocket closed. Code: ${code}, Reason: ${reason}`);
+      this.isConnected = false;
+      this.stopPingInterval();
+      
+      if (code !== 1000) { // Normal closure
+        this.scheduleReconnect();
+      }
+    });
   }
 
-  // Data storage and retrieval
-  storeWebhookData(data) {
-    const { symbol, blocks = [], flow = [], complexTrades = [], deltaConcentration = [], timestamp } = data;
+  subscribeToChannels() {
+    if (!this.ws || !this.isConnected) return;
+    
+    try {
+      // Subscribe to institutional flow for major symbols
+      const subscribeMessage = {
+        action: 'subscribe',
+        channels: [
+          'institutional_flow',
+          'large_prints',
+          'complex_trades',
+          'delta_concentration'
+        ],
+        symbols: ['SPY', 'QQQ', 'AAPL', 'MSFT', 'TSLA', 'NVDA', 'AMZN', 'GOOGL', 'META'],
+        timestamp: new Date().toISOString()
+      };
+      
+      this.ws.send(JSON.stringify(subscribeMessage));
+      this.logger.info('Subscribed to institutional flow channels');
+      
+    } catch (error) {
+      this.logger.error(`Subscription error: ${error.message}`);
+    }
+  }
+
+  handleWebSocketMessage(message) {
+    try {
+      const { type, data, symbol, timestamp } = message;
+      
+      if (!type || !data) {
+        this.logger.warn('Invalid message format');
+        return;
+      }
+      
+      switch (type.toLowerCase()) {
+        case 'institutional_flow':
+          this.handleInstitutionalFlow(data, symbol, timestamp);
+          break;
+          
+        case 'large_print':
+        case 'block_trade':
+          this.handleBlockTrade(data, symbol, timestamp);
+          break;
+          
+        case 'complex_trade':
+          this.handleComplexTrade(data, symbol, timestamp);
+          break;
+          
+        case 'delta_concentration':
+          this.handleDeltaConcentration(data, symbol, timestamp);
+          break;
+          
+        case 'heartbeat':
+        case 'ping':
+          this.handleHeartbeat(data);
+          break;
+          
+        default:
+          this.logger.debug(`Unknown message type: ${type}`);
+      }
+      
+      // Log message rate every 100 messages
+      if (this.messageCount % 100 === 0) {
+        const uptime = Date.now() - this.connectionStartTime;
+        const messagesPerMinute = (this.messageCount / (uptime / 60000)).toFixed(1);
+        this.logger.info(`Message rate: ${messagesPerMinute} msgs/min, Total: ${this.messageCount}`);
+      }
+      
+    } catch (error) {
+      this.logger.error(`Error handling WebSocket message: ${error.message}`);
+    }
+  }
+
+  handleInstitutionalFlow(flowData, symbol, timestamp) {
+    if (!Array.isArray(flowData)) {
+      flowData = [flowData];
+    }
+    
+    flowData.forEach(flow => {
+      this.storeData('flow', {
+        symbol,
+        ...flow,
+        timestamp: timestamp || new Date().toISOString(),
+        source: 'websocket'
+      });
+    });
+    
+    this.logger.debug(`Stored ${flowData.length} flow items for ${symbol}`);
+  }
+
+  handleBlockTrade(blockData, symbol, timestamp) {
+    this.storeData('blocks', {
+      symbol,
+      ...blockData,
+      timestamp: timestamp || new Date().toISOString(),
+      source: 'websocket'
+    });
+    
+    this.logger.debug(`Stored block trade for ${symbol}: ${blockData.contracts} contracts @ $${blockData.strike}`);
+  }
+
+  handleComplexTrade(tradeData, symbol, timestamp) {
+    this.storeData('complexTrades', {
+      symbol,
+      ...tradeData,
+      timestamp: timestamp || new Date().toISOString(),
+      source: 'websocket'
+    });
+  }
+
+  handleDeltaConcentration(deltaData, symbol, timestamp) {
+    this.storeData('deltaConcentration', {
+      symbol,
+      ...deltaData,
+      timestamp: timestamp || new Date().toISOString(),
+      source: 'websocket'
+    });
+  }
+
+  handleHeartbeat(data) {
+    // Send pong response if required
+    if (data && data.requires_pong) {
+      this.sendPong();
+    }
+  }
+
+  sendPong() {
+    if (!this.ws || !this.isConnected) return;
+    
+    try {
+      this.ws.send(JSON.stringify({ action: 'pong', timestamp: new Date().toISOString() }));
+    } catch (error) {
+      this.logger.error(`Error sending pong: ${error.message}`);
+    }
+  }
+
+  startPingInterval() {
+    // Send ping every 30 seconds to keep connection alive
+    this.pingInterval = setInterval(() => {
+      if (this.ws && this.isConnected) {
+        try {
+          this.ws.send(JSON.stringify({ action: 'ping', timestamp: new Date().toISOString() }));
+          this.logger.debug('Sent ping');
+        } catch (error) {
+          this.logger.error(`Error sending ping: ${error.message}`);
+        }
+      }
+    }, 30000);
+  }
+
+  stopPingInterval() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.logger.error('Max reconnection attempts reached. Please check API key and network connection.');
+      return;
+    }
+    
+    this.reconnectAttempts++;
+    const delay = Math.min(this.reconnectDelay * this.reconnectAttempts, 60000); // Max 60 seconds
+    
+    this.logger.info(`Scheduling reconnection attempt ${this.reconnectAttempts} in ${delay}ms`);
+    
+    setTimeout(() => {
+      this.logger.info(`Attempting reconnection ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+      this.connect();
+    }, delay);
+  }
+
+  connectionHealthCheck() {
+    if (!this.isConnected) return;
+    
+    // Check if we've received any messages in the last 2 minutes
+    if (this.lastMessageTime && (Date.now() - this.lastMessageTime > 120000)) {
+      this.logger.warn('No messages received for 2 minutes. Connection may be stale.');
+      // Force reconnect
+      this.ws.close();
+      this.scheduleReconnect();
+    }
+  }
+
+  // Store data by type and symbol
+  storeData(type, data) {
+    const { symbol } = data;
+    
+    if (!symbol) {
+      this.logger.warn('Cannot store data without symbol');
+      return;
+    }
     
     if (!this.storedData.has(symbol)) {
       this.storedData.set(symbol, {
@@ -225,69 +310,259 @@ class UnusualWhalesWebhook {
     
     const symbolData = this.storedData.get(symbol);
     
-    // Add new data
-    if (blocks.length > 0) {
-      symbolData.blocks.push(...blocks.map(block => ({
-        ...block,
-        symbol,
-        timestamp: timestamp || new Date()
-      })));
-    }
-    
-    if (flow.length > 0) {
-      symbolData.flow.push(...flow.map(f => ({
-        ...f,
-        symbol,
-        timestamp: timestamp || new Date()
-      })));
-    }
-    
-    if (complexTrades.length > 0) {
-      symbolData.complexTrades.push(...complexTrades);
-    }
-    
-    if (deltaConcentration.length > 0) {
-      symbolData.deltaConcentration.push(...deltaConcentration);
+    switch (type) {
+      case 'blocks':
+        symbolData.blocks.push(data);
+        // Keep only recent blocks (last 100)
+        if (symbolData.blocks.length > 100) {
+          symbolData.blocks = symbolData.blocks.slice(-100);
+        }
+        break;
+        
+      case 'flow':
+        symbolData.flow.push(data);
+        // Keep only recent flow (last 500)
+        if (symbolData.flow.length > 500) {
+          symbolData.flow = symbolData.flow.slice(-500);
+        }
+        break;
+        
+      case 'complexTrades':
+        symbolData.complexTrades.push(data);
+        break;
+        
+      case 'deltaConcentration':
+        symbolData.deltaConcentration.push(data);
+        break;
     }
     
     symbolData.lastUpdated = new Date();
-    
-    // Keep data manageable
-    this.trimStoredData(symbol);
   }
 
-  getStoredDataForDate(symbol, date) {
-    const defaultData = { blocks: [], flow: [], complexTrades: [], deltaConcentration: [] };
-    
-    if (!this.storedData.has(symbol)) {
-      return defaultData;
+  // API Methods (compatible with existing bot code)
+  async getInstitutionalFlow(symbol, date = null) {
+    try {
+      const targetDate = date || this.getTodayDate();
+      
+      // Check if we have WebSocket data
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        const filteredFlow = this.filterByDate(symbolData.flow, targetDate);
+        
+        if (filteredFlow.length > 0) {
+          this.logger.info(`Using WebSocket data for ${symbol} on ${targetDate}: ${filteredFlow.length} flows`);
+          return this.processFlowData(filteredFlow, targetDate);
+        }
+      }
+      
+      // Fallback to simulation if no WebSocket data
+      this.logger.info(`Simulating institutional flow for ${symbol} on ${targetDate}`);
+      const simulated = await this.simulateInstitutionalFlow(symbol, targetDate);
+      return this.processFlowData(simulated, targetDate);
+      
+    } catch (error) {
+      this.logger.error(`Unusual Whales flow error for ${symbol}${date ? ' on ' + date : ''}: ${error.message}`);
+      return [];
     }
+  }
+
+  async getBlocks(symbol, minSize = 100, date = null) {
+    try {
+      const targetDate = date || this.getTodayDate();
+      
+      // Check WebSocket data
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        const filteredBlocks = this.filterByDate(symbolData.blocks, targetDate)
+          .filter(block => block.contracts >= minSize);
+        
+        if (filteredBlocks.length > 0) {
+          return filteredBlocks;
+        }
+      }
+      
+      // Fallback to simulation
+      return await this.simulateBlocks(symbol, minSize, targetDate);
+      
+    } catch (error) {
+      this.logger.error(`Unusual Whales blocks error for ${symbol}: ${error.message}`);
+      return [];
+    }
+  }
+
+  async getRealDelta(symbol, strike, expiration, optionType, date = null) {
+    try {
+      const targetDate = date || this.getTodayDate();
+      
+      // Try to find real delta from WebSocket data
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        
+        // Look for matching flow or block
+        const matchingData = [...symbolData.flow, ...symbolData.blocks].find(item =>
+          item.strike === strike &&
+          item.option_type === optionType &&
+          item.real_delta !== undefined
+        );
+        
+        if (matchingData) {
+          return matchingData.real_delta;
+        }
+      }
+      
+      // Fallback to simulation
+      return await this.simulateRealDelta(symbol, strike, optionType, targetDate);
+      
+    } catch (error) {
+      this.logger.error(`Unusual Whales real delta error: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async getComplexTrades(symbol, date = null) {
+    try {
+      const targetDate = date || this.getTodayDate();
+      
+      // Check WebSocket data
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        const filteredTrades = this.filterByDate(symbolData.complexTrades, targetDate);
+        
+        if (filteredTrades.length > 0) {
+          return filteredTrades;
+        }
+      }
+      
+      // Fallback to simulation
+      return await this.simulateComplexTrades(symbol, targetDate);
+      
+    } catch (error) {
+      this.logger.error(`Unusual Whales complex trades error for ${symbol}: ${error.message}`);
+      return [];
+    }
+  }
+
+  async getDeltaConcentration(symbol, date = null) {
+    try {
+      const targetDate = date || this.getTodayDate();
+      
+      // Check WebSocket data
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        const filteredConcentration = this.filterByDate(symbolData.deltaConcentration, targetDate);
+        
+        if (filteredConcentration.length > 0) {
+          return filteredConcentration;
+        }
+      }
+      
+      // Fallback to simulation
+      return await this.simulateDeltaConcentration(symbol, targetDate);
+      
+    } catch (error) {
+      this.logger.error(`Unusual Whales delta concentration error for ${symbol}: ${error.message}`);
+      return [];
+    }
+  }
+
+  // NEW: Get live blocks from WebSocket (real-time)
+  async getLiveBlocks(symbol, minutesBack = 5) {
+    try {
+      const cutoff = new Date(Date.now() - minutesBack * 60 * 1000);
+      
+      if (this.storedData.has(symbol)) {
+        const symbolData = this.storedData.get(symbol);
+        
+        const recentBlocks = symbolData.blocks.filter(block => 
+          new Date(block.timestamp) > cutoff
+        );
+        
+        if (recentBlocks.length > 0) {
+          return recentBlocks;
+        }
+      }
+      
+      // If no recent blocks in WebSocket, simulate some
+      return await this.simulateLiveBlocks(symbol, minutesBack);
+      
+    } catch (error) {
+      this.logger.error(`Live blocks error for ${symbol}: ${error.message}`);
+      return [];
+    }
+  }
+
+  // NEW: Get connection stats
+  getConnectionStats() {
+    return {
+      isConnected: this.isConnected,
+      connectionUptime: this.connectionStartTime ? Date.now() - this.connectionStartTime : 0,
+      messageCount: this.messageCount,
+      lastMessageTime: this.lastMessageTime,
+      reconnectAttempts: this.reconnectAttempts,
+      symbolsWithData: Array.from(this.storedData.keys()).length,
+      storedDataSizes: Array.from(this.storedData.entries()).map(([symbol, data]) => ({
+        symbol,
+        blocks: data.blocks.length,
+        flow: data.flow.length,
+        complexTrades: data.complexTrades.length,
+        deltaConcentration: data.deltaConcentration.length
+      }))
+    };
+  }
+
+  // Utility methods
+  filterByDate(items, targetDate) {
+    if (!items || items.length === 0) return [];
     
-    const symbolData = this.storedData.get(symbol);
-    const targetDate = new Date(date).toISOString().split('T')[0];
-    
-    const filterByDate = (items) => items.filter(item => {
+    return items.filter(item => {
       if (!item.timestamp) return false;
       const itemDate = new Date(item.timestamp).toISOString().split('T')[0];
       return itemDate === targetDate;
     });
-    
-    return {
-      blocks: filterByDate(symbolData.blocks),
-      flow: filterByDate(symbolData.flow),
-      complexTrades: symbolData.complexTrades,
-      deltaConcentration: symbolData.deltaConcentration
-    };
   }
 
-  getAllBlocks(symbol) {
-    if (!this.storedData.has(symbol)) {
-      return [];
-    }
-    return this.storedData.get(symbol).blocks;
+  processFlowData(flowData, targetDate) {
+    return flowData.filter(flow => {
+      if (!flow.timestamp) return false;
+      
+      try {
+        const flowDate = new Date(flow.timestamp).toISOString().split('T')[0];
+        const matchesDate = flowDate === targetDate;
+        
+        const isValid = flow.option_type && 
+                       flow.strike && 
+                       flow.notional && 
+                       flow.notional >= config.rules.minNotional;
+        
+        return matchesDate && isValid;
+        
+      } catch (error) {
+        this.logger.warn(`Error parsing flow timestamp: ${error.message}`);
+        return false;
+      }
+    }).map(flow => {
+      try {
+        const expiration = flow.expiration ? new Date(flow.expiration) : null;
+        const flowTimestamp = new Date(flow.timestamp);
+        const dte = expiration ? Math.ceil((expiration - flowTimestamp) / (1000 * 60 * 60 * 24)) : 0;
+        
+        return {
+          ...flow,
+          dte: Math.max(0, dte),
+          timestamp: flowTimestamp
+        };
+      } catch (error) {
+        this.logger.warn(`Error processing flow: ${error.message}`);
+        return {
+          ...flow,
+          dte: 0,
+          timestamp: new Date(flow.timestamp || targetDate)
+        };
+      }
+    });
   }
 
-  // Simulation methods (for development/testing)
+  // Simulation methods (for development/testing when WebSocket is not available)
   async simulateInstitutionalFlow(symbol, date) {
     const cacheKey = `flow_${symbol}_${date}`;
     
@@ -313,7 +588,6 @@ class UnusualWhalesWebhook {
   }
 
   async simulateRealDelta(symbol, strike, optionType, date) {
-    // Simple delta simulation based on strike and option type
     const baseDelta = optionType === 'CALL' ? 0.5 : -0.5;
     const randomVariation = (Math.random() - 0.5) * 0.3;
     return baseDelta + randomVariation;
@@ -387,7 +661,6 @@ class UnusualWhalesWebhook {
     return blocks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   }
 
-  // Helper methods
   generateSimulatedFlow(symbol, date) {
     const baseDate = new Date(date);
     const basePrice = 100 + Math.random() * 50;
@@ -427,92 +700,6 @@ class UnusualWhalesWebhook {
     return flow.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   }
 
-  parseWebhookPayload(payload) {
-    // This is a placeholder - you'll need to adjust based on actual Unusual Whales webhook format
-    // For now, assume payload is already in the right format or simulate
-    
-    if (payload && payload.symbol) {
-      // Real webhook format
-      return {
-        symbol: payload.symbol,
-        blocks: payload.blocks || payload.large_prints || [],
-        flow: payload.flow || payload.institutional_flow || [],
-        complexTrades: payload.complex_trades || payload.strategies || [],
-        deltaConcentration: payload.delta_concentration || [],
-        timestamp: new Date(payload.timestamp || Date.now())
-      };
-    }
-    
-    // Simulate a webhook if no real data
-    return this.simulateWebhookPayload();
-  }
-
-  simulateWebhookPayload() {
-    const symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'TSLA', 'NVDA'];
-    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-    const date = this.getTodayDate();
-    
-    return {
-      symbol,
-      blocks: this.generateSimulatedFlow(symbol, date).slice(0, 5),
-      flow: this.generateSimulatedFlow(symbol, date),
-      timestamp: new Date()
-    };
-  }
-
-  // ✅ FIXED: Now accepts targetDate parameter (kept from original)
-  filterAndValidateFlow(data, targetDate = null) {
-    if (!data || data.length === 0) return [];
-    
-    const referenceDate = targetDate || this.getTodayDate();
-    
-    this.logger.debug(`Filtering flow data for date: ${referenceDate}`);
-    
-    const filtered = data.filter(flow => {
-      if (!flow.timestamp) return false;
-      
-      try {
-        const flowDate = new Date(flow.timestamp).toISOString().split('T')[0];
-        const matchesDate = flowDate === referenceDate;
-        
-        const isValid = flow.option_type && 
-                       flow.strike && 
-                       flow.notional && 
-                       flow.notional >= config.rules.minNotional;
-        
-        return matchesDate && isValid;
-        
-      } catch (error) {
-        this.logger.warn(`Error parsing flow timestamp: ${error.message}`);
-        return false;
-      }
-    });
-    
-    this.logger.info(`Filtered ${filtered.length} institutional flows for ${referenceDate}`);
-    
-    return filtered.map(flow => {
-      try {
-        const expiration = flow.expiration ? new Date(flow.expiration) : null;
-        const flowTimestamp = new Date(flow.timestamp);
-        const dte = expiration ? Math.ceil((expiration - flowTimestamp) / (1000 * 60 * 60 * 24)) : 0;
-        
-        return {
-          ...flow,
-          dte: Math.max(0, dte),
-          timestamp: flowTimestamp
-        };
-      } catch (error) {
-        this.logger.warn(`Error processing flow: ${error.message}`);
-        return {
-          ...flow,
-          dte: 0,
-          timestamp: new Date(flow.timestamp || referenceDate)
-        };
-      }
-    });
-  }
-
-  // Utility methods
   getRandomExpiration(baseDate) {
     const date = new Date(baseDate);
     date.setDate(date.getDate() + Math.floor(Math.random() * 45) + 1);
@@ -521,26 +708,6 @@ class UnusualWhalesWebhook {
 
   getTodayDate() {
     return new Date().toISOString().split('T')[0];
-  }
-
-  trimStoredData(symbol) {
-    if (!this.storedData.has(symbol)) return;
-    
-    const symbolData = this.storedData.get(symbol);
-    
-    // Keep only last 1000 items of each type
-    ['blocks', 'flow'].forEach(type => {
-      if (symbolData[type].length > 1000) {
-        symbolData[type] = symbolData[type].slice(-1000);
-      }
-    });
-    
-    // Keep only last 100 complex trades and delta concentrations
-    ['complexTrades', 'deltaConcentration'].forEach(type => {
-      if (symbolData[type].length > 100) {
-        symbolData[type] = symbolData[type].slice(-100);
-      }
-    });
   }
 
   cleanupOldData(daysToKeep = 7) {
@@ -561,16 +728,18 @@ class UnusualWhalesWebhook {
     }
   }
 
-  classifyFlowType(flow) {
-    const notional = flow.notional;
+  // Graceful shutdown
+  disconnect() {
+    this.stopPingInterval();
     
-    if (notional >= 10000000) return 'ELITE_INSTITUTIONAL';
-    if (notional >= 1000000) return 'LARGE_BLOCK';
-    if (notional >= 500000) return 'INSTITUTIONAL';
-    if (notional >= 100000) return 'SIZEABLE';
+    if (this.ws) {
+      this.ws.close(1000, 'Normal shutdown');
+      this.ws = null;
+    }
     
-    return 'STANDARD';
+    this.isConnected = false;
+    this.logger.info('WebSocket disconnected');
   }
 }
 
-module.exports = UnusualWhalesWebhook;
+module.exports = UnusualWhalesWebSocket;
