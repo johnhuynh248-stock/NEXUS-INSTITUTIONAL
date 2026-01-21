@@ -1,12 +1,15 @@
 const WebSocket = require('ws');
 const config = require('../config');
 const Logger = require('../utils/logger');
+const EventEmitter = require('events');
 
-class UnusualWhalesWebSocket {
+class UnusualWhalesWebSocket extends EventEmitter {
   constructor() {
+    super();
     this.logger = new Logger('unusual-whales-ws');
     this.storedData = new Map(); // symbol -> { blocks: [], flow: [], timestamp }
     this.simulationCache = new Map();
+    this.activeSymbols = new Set(); // Track symbols with live data
     this.ws = null;
     this.isConnected = false;
     this.reconnectAttempts = 0;
@@ -39,7 +42,6 @@ class UnusualWhalesWebSocket {
       }
       
       // In production, this would be the real Unusual Whales WebSocket endpoint
-      // For development, we'll use a placeholder or simulate
       const wsUrl = process.env.UNUSUAL_WHALES_WS_URL || 'wss://api.unusualwhales.com/ws/v1/flow';
       
       this.ws = new WebSocket(wsUrl, {
@@ -73,6 +75,9 @@ class UnusualWhalesWebSocket {
       
       // Start ping interval to keep connection alive
       this.startPingInterval();
+      
+      // Emit connected event
+      this.emit('connected');
     });
 
     this.ws.on('message', (data) => {
@@ -90,12 +95,14 @@ class UnusualWhalesWebSocket {
     this.ws.on('error', (error) => {
       this.logger.error(`WebSocket error: ${error.message}`);
       this.isConnected = false;
+      this.emit('error', error);
     });
 
     this.ws.on('close', (code, reason) => {
       this.logger.warn(`WebSocket closed. Code: ${code}, Reason: ${reason}`);
       this.isConnected = false;
       this.stopPingInterval();
+      this.emit('disconnected', { code, reason });
       
       if (code !== 1000) { // Normal closure
         this.scheduleReconnect();
@@ -182,44 +189,70 @@ class UnusualWhalesWebSocket {
     }
     
     flowData.forEach(flow => {
-      this.storeData('flow', {
+      const processedFlow = {
         symbol,
         ...flow,
         timestamp: timestamp || new Date().toISOString(),
         source: 'websocket'
-      });
+      };
+      
+      this.storeData('flow', processedFlow);
+      
+      // Emit flow event
+      this.emit('flow', processedFlow);
     });
     
     this.logger.debug(`Stored ${flowData.length} flow items for ${symbol}`);
   }
 
   handleBlockTrade(blockData, symbol, timestamp) {
-    this.storeData('blocks', {
+    const processedBlock = {
       symbol,
       ...blockData,
       timestamp: timestamp || new Date().toISOString(),
       source: 'websocket'
-    });
+    };
+    
+    this.storeData('blocks', processedBlock);
+    
+    // Emit block event
+    this.emit('block', processedBlock);
     
     this.logger.debug(`Stored block trade for ${symbol}: ${blockData.contracts} contracts @ $${blockData.strike}`);
+    
+    // Log significant blocks
+    if (blockData.notional > 1000000) {
+      const type = blockData.option_type === 'CALL' ? 'C' : 'P';
+      this.logger.info(`🚨 Large block: ${symbol} ${blockData.strike}${type} $${(blockData.notional / 1000000).toFixed(1)}M`);
+    }
   }
 
   handleComplexTrade(tradeData, symbol, timestamp) {
-    this.storeData('complexTrades', {
+    const processedTrade = {
       symbol,
       ...tradeData,
       timestamp: timestamp || new Date().toISOString(),
       source: 'websocket'
-    });
+    };
+    
+    this.storeData('complexTrades', processedTrade);
+    
+    // Emit complex trade event
+    this.emit('complex_trade', processedTrade);
   }
 
   handleDeltaConcentration(deltaData, symbol, timestamp) {
-    this.storeData('deltaConcentration', {
+    const processedData = {
       symbol,
       ...deltaData,
       timestamp: timestamp || new Date().toISOString(),
       source: 'websocket'
-    });
+    };
+    
+    this.storeData('deltaConcentration', processedData);
+    
+    // Emit delta concentration event
+    this.emit('delta_concentration', processedData);
   }
 
   handleHeartbeat(data) {
@@ -298,6 +331,9 @@ class UnusualWhalesWebSocket {
       return;
     }
     
+    // Track active symbol
+    this.activeSymbols.add(symbol.toUpperCase());
+    
     if (!this.storedData.has(symbol)) {
       this.storedData.set(symbol, {
         blocks: [],
@@ -313,17 +349,17 @@ class UnusualWhalesWebSocket {
     switch (type) {
       case 'blocks':
         symbolData.blocks.push(data);
-        // Keep only recent blocks (last 100)
-        if (symbolData.blocks.length > 100) {
-          symbolData.blocks = symbolData.blocks.slice(-100);
+        // Keep only recent blocks (last 200 for better live analysis)
+        if (symbolData.blocks.length > 200) {
+          symbolData.blocks = symbolData.blocks.slice(-200);
         }
         break;
         
       case 'flow':
         symbolData.flow.push(data);
-        // Keep only recent flow (last 500)
-        if (symbolData.flow.length > 500) {
-          symbolData.flow = symbolData.flow.slice(-500);
+        // Keep only recent flow (last 1000 for better live analysis)
+        if (symbolData.flow.length > 1000) {
+          symbolData.flow = symbolData.flow.slice(-1000);
         }
         break;
         
@@ -339,7 +375,110 @@ class UnusualWhalesWebSocket {
     symbolData.lastUpdated = new Date();
   }
 
-  // API Methods (compatible with existing bot code)
+  // NEW: Get live blocks with improved filtering for divergence detection
+  async getLiveBlocks(symbol, minutesBack = 5) {
+    try {
+      const cutoff = new Date(Date.now() - minutesBack * 60 * 1000);
+      const symbolUpper = symbol.toUpperCase();
+      
+      if (this.storedData.has(symbolUpper)) {
+        const symbolData = this.storedData.get(symbolUpper);
+        
+        const recentBlocks = symbolData.blocks.filter(block => 
+          new Date(block.timestamp) > cutoff
+        ).map(block => ({
+          ...block,
+          // Ensure required fields for divergence detection
+          notional: block.notional || (block.premium || 0) * (block.contracts || 0) * 100,
+          real_delta: block.real_delta || (block.option_type === 'CALL' ? 0.5 : -0.5) * 0.8,
+          delta_exposure: block.delta_exposure || ((block.real_delta || 0.5) * (block.notional || 0))
+        }));
+        
+        if (recentBlocks.length > 0) {
+          // Sort by timestamp descending (newest first)
+          return recentBlocks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        }
+      }
+      
+      // If no recent blocks in WebSocket, simulate some
+      return await this.simulateLiveBlocks(symbol, minutesBack);
+      
+    } catch (error) {
+      this.logger.error(`Live blocks error for ${symbol}: ${error.message}`);
+      return [];
+    }
+  }
+
+  // NEW: Get active symbols with recent data
+  getActiveSymbols() {
+    const now = new Date();
+    const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+    
+    const active = [];
+    
+    for (const [symbol, data] of this.storedData.entries()) {
+      // Check if we have recent data for this symbol
+      const hasRecentData = data.blocks.some(block => 
+        new Date(block.timestamp) > tenMinutesAgo
+      ) || data.flow.some(flow => 
+        new Date(flow.timestamp) > tenMinutesAgo
+      );
+      
+      if (hasRecentData) {
+        active.push(symbol);
+      }
+    }
+    
+    return active;
+  }
+
+  // NEW: Get recent data count for a symbol
+  getRecentDataCount(symbol, minutesBack = 10) {
+    const cutoff = new Date(Date.now() - minutesBack * 60 * 1000);
+    const symbolUpper = symbol.toUpperCase();
+    
+    if (!this.storedData.has(symbolUpper)) {
+      return { blocks: 0, flow: 0 };
+    }
+    
+    const data = this.storedData.get(symbolUpper);
+    
+    const recentBlocks = data.blocks.filter(block => 
+      new Date(block.timestamp) > cutoff
+    ).length;
+    
+    const recentFlow = data.flow.filter(flow => 
+      new Date(flow.timestamp) > cutoff
+    ).length;
+    
+    return { blocks: recentBlocks, flow: recentFlow };
+  }
+
+  // Enhanced getConnectionStats with more detailed info
+  getConnectionStats() {
+    const activeSymbols = this.getActiveSymbols();
+    
+    return {
+      isConnected: this.isConnected,
+      connectionUptime: this.connectionStartTime ? Date.now() - this.connectionStartTime : 0,
+      messageCount: this.messageCount,
+      lastMessageTime: this.lastMessageTime,
+      reconnectAttempts: this.reconnectAttempts,
+      symbolsWithData: this.storedData.size,
+      activeSymbols: activeSymbols.length,
+      activeSymbolsList: activeSymbols.slice(0, 10), // Top 10
+      storedDataSizes: Array.from(this.storedData.entries()).map(([symbol, data]) => ({
+        symbol,
+        blocks: data.blocks.length,
+        flow: data.flow.length,
+        complexTrades: data.complexTrades.length,
+        deltaConcentration: data.deltaConcentration.length,
+        lastUpdated: data.lastUpdated
+      }))
+    };
+  }
+
+  // API Methods (compatible with existing bot code) - UPDATED for better live data
   async getInstitutionalFlow(symbol, date = null) {
     try {
       const targetDate = date || this.getTodayDate();
@@ -465,51 +604,6 @@ class UnusualWhalesWebSocket {
     }
   }
 
-  // NEW: Get live blocks from WebSocket (real-time)
-  async getLiveBlocks(symbol, minutesBack = 5) {
-    try {
-      const cutoff = new Date(Date.now() - minutesBack * 60 * 1000);
-      
-      if (this.storedData.has(symbol)) {
-        const symbolData = this.storedData.get(symbol);
-        
-        const recentBlocks = symbolData.blocks.filter(block => 
-          new Date(block.timestamp) > cutoff
-        );
-        
-        if (recentBlocks.length > 0) {
-          return recentBlocks;
-        }
-      }
-      
-      // If no recent blocks in WebSocket, simulate some
-      return await this.simulateLiveBlocks(symbol, minutesBack);
-      
-    } catch (error) {
-      this.logger.error(`Live blocks error for ${symbol}: ${error.message}`);
-      return [];
-    }
-  }
-
-  // NEW: Get connection stats
-  getConnectionStats() {
-    return {
-      isConnected: this.isConnected,
-      connectionUptime: this.connectionStartTime ? Date.now() - this.connectionStartTime : 0,
-      messageCount: this.messageCount,
-      lastMessageTime: this.lastMessageTime,
-      reconnectAttempts: this.reconnectAttempts,
-      symbolsWithData: Array.from(this.storedData.keys()).length,
-      storedDataSizes: Array.from(this.storedData.entries()).map(([symbol, data]) => ({
-        symbol,
-        blocks: data.blocks.length,
-        flow: data.flow.length,
-        complexTrades: data.complexTrades.length,
-        deltaConcentration: data.deltaConcentration.length
-      }))
-    };
-  }
-
   // Utility methods
   filterByDate(items, targetDate) {
     if (!items || items.length === 0) return [];
@@ -546,10 +640,24 @@ class UnusualWhalesWebSocket {
         const flowTimestamp = new Date(flow.timestamp);
         const dte = expiration ? Math.ceil((expiration - flowTimestamp) / (1000 * 60 * 60 * 24)) : 0;
         
+        // Calculate delta exposure if not present
+        const realDelta = flow.real_delta || (flow.option_type === 'CALL' ? 0.5 : -0.5) * 0.8;
+        const deltaExposure = flow.delta_exposure || realDelta * flow.notional;
+        
         return {
           ...flow,
+          real_delta: realDelta,
+          delta_exposure: deltaExposure,
           dte: Math.max(0, dte),
-          timestamp: flowTimestamp
+          timestamp: flowTimestamp,
+          // Add fields for divergence detection
+          distance_percent: 0, // Will be calculated in flow-analyzer
+          distance_absolute: 0,
+          atm: false,
+          hour: flowTimestamp.getHours(),
+          stock_price: flow.stock_price || 0,
+          stock_option_combo: flow.stock_option_combo || false,
+          flow_type: flow.complex_type || 'SINGLE'
         };
       } catch (error) {
         this.logger.warn(`Error processing flow: ${error.message}`);
@@ -562,7 +670,45 @@ class UnusualWhalesWebSocket {
     });
   }
 
-  // Simulation methods (for development/testing when WebSocket is not available)
+  // Simulation methods (enhanced for better live analysis)
+  async simulateLiveBlocks(symbol, minutesBack) {
+    const blocks = [];
+    const now = new Date();
+    const basePrice = 100 + Math.random() * 50;
+    
+    // Generate more realistic blocks for divergence detection
+    for (let i = 0; i < 3 + Math.floor(Math.random() * 5); i++) {
+      const minutesAgo = Math.random() * minutesBack;
+      const timestamp = new Date(now.getTime() - minutesAgo * 60 * 1000);
+      const isCall = Math.random() > 0.4; // Slightly biased to calls
+      const strike = Math.round(basePrice * (0.97 + Math.random() * 0.06));
+      const contracts = Math.floor(Math.random() * 3000) + 500;
+      const pricePerContract = parseFloat((0.5 + Math.random() * 5).toFixed(2));
+      const notional = contracts * pricePerContract * 100;
+      const realDelta = isCall ? 0.4 + Math.random() * 0.4 : -0.4 - Math.random() * 0.4;
+      
+      blocks.push({
+        symbol,
+        timestamp: timestamp.toISOString(),
+        option_type: isCall ? 'CALL' : 'PUT',
+        strike,
+        expiration: this.getRandomExpiration(timestamp),
+        contracts,
+        price: pricePerContract,
+        notional,
+        side: Math.random() > 0.3 ? 'BUY' : 'SELL',
+        real_delta: realDelta,
+        delta_exposure: realDelta * notional,
+        dte: Math.floor(Math.random() * 5),
+        complex_type: Math.random() > 0.85 ? (isCall ? 'CALL_SPREAD' : 'PUT_SPREAD') : null,
+        source: 'simulation'
+      });
+    }
+    
+    return blocks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  }
+
+  // Other simulation methods remain the same...
   async simulateInstitutionalFlow(symbol, date) {
     const cacheKey = `flow_${symbol}_${date}`;
     
@@ -631,36 +777,6 @@ class UnusualWhalesWebSocket {
     return concentrations;
   }
 
-  async simulateLiveBlocks(symbol, minutesBack) {
-    const blocks = [];
-    const now = new Date();
-    const basePrice = 100 + Math.random() * 50;
-    
-    for (let i = 0; i < 2 + Math.floor(Math.random() * 4); i++) {
-      const minutesAgo = Math.random() * minutesBack;
-      const timestamp = new Date(now.getTime() - minutesAgo * 60 * 1000);
-      const isCall = Math.random() > 0.5;
-      const strike = Math.round(basePrice * (0.97 + Math.random() * 0.06));
-      
-      blocks.push({
-        symbol,
-        timestamp: timestamp.toISOString(),
-        option_type: isCall ? 'CALL' : 'PUT',
-        strike,
-        expiration: this.getRandomExpiration(timestamp),
-        contracts: Math.floor(Math.random() * 3000) + 500,
-        price: parseFloat((0.5 + Math.random() * 5).toFixed(2)),
-        notional: Math.random() * 2000000 + 500000,
-        side: Math.random() > 0.3 ? 'BUY' : 'SELL',
-        real_delta: isCall ? 0.4 + Math.random() * 0.4 : -0.4 - Math.random() * 0.4,
-        dte: Math.floor(Math.random() * 5),
-        complex_type: Math.random() > 0.85 ? (isCall ? 'CALL_SPREAD' : 'PUT_SPREAD') : null
-      });
-    }
-    
-    return blocks.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  }
-
   generateSimulatedFlow(symbol, date) {
     const baseDate = new Date(date);
     const basePrice = 100 + Math.random() * 50;
@@ -677,6 +793,7 @@ class UnusualWhalesWebSocket {
       const contracts = Math.floor(Math.random() * 5000) + 100;
       const pricePerContract = (0.5 + Math.random() * 5).toFixed(2);
       const notional = contracts * pricePerContract * 100;
+      const realDelta = isCall ? 0.5 + Math.random() * 0.3 : -0.5 - Math.random() * 0.3;
       
       flow.push({
         symbol,
@@ -688,12 +805,14 @@ class UnusualWhalesWebSocket {
         price: parseFloat(pricePerContract),
         notional,
         side: Math.random() > 0.3 ? 'BUY' : 'SELL',
-        real_delta: isCall ? 0.5 + Math.random() * 0.3 : -0.5 - Math.random() * 0.3,
+        real_delta: realDelta,
+        delta_exposure: realDelta * notional,
         dte: Math.floor(Math.random() * 14),
         complex_type: Math.random() > 0.8 ? (isCall ? 'CALL_SPREAD' : 'PUT_SPREAD') : null,
         underlying_price: basePrice * (0.98 + Math.random() * 0.04),
         stock_price: basePrice * (0.99 + Math.random() * 0.02),
-        stock_option_combo: Math.random() > 0.7
+        stock_option_combo: Math.random() > 0.7,
+        source: 'simulation'
       });
     }
     
@@ -726,6 +845,13 @@ class UnusualWhalesWebSocket {
         });
       }
     }
+  }
+
+  // NEW: Manual reconnect method
+  reconnect() {
+    this.logger.info('Manually reconnecting WebSocket...');
+    this.disconnect();
+    setTimeout(() => this.connect(), 1000);
   }
 
   // Graceful shutdown
