@@ -1,25 +1,17 @@
+# Use Node 18 (Railway compatible)
 FROM node:18-alpine
 
+# Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files first (important for caching)
+COPY package.json package-lock.json ./
 
-# Install dependencies
+# Install ONLY production dependencies
 RUN npm ci --only=production
 
 # Copy source code
 COPY . .
 
-# Create logs directory
-RUN mkdir -p logs
-
-# Set environment variables
-ENV NODE_ENV=production
-ENV PORT=3000
-
-# Expose port
-EXPOSE 3000
-
 # Start the bot
-CMD ["node", "bot.js"]
+CMD ["node", "src/index.js"]
