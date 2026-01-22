@@ -42,7 +42,7 @@ class UnusualWhalesWebSocket extends EventEmitter {
       }
       
       // In production, this would be the real Unusual Whales WebSocket endpoint
-      const wsUrl = process.env.UNUSUAL_WHALES_WS_URL || 'wss://api.unusualwhales.com/ws/v1/flow';
+      const wsUrl = process.env.UNUSUAL_WHALES_WS_URL || `wss://api.unusualwhales.com/api/websocket?token=${process.env.UNUSUAL_WHALES_API_KEY}`;
       
       this.ws = new WebSocket(wsUrl, {
         headers: {
